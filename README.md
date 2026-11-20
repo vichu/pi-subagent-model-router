@@ -7,7 +7,7 @@ When routing is enabled, give Pi a normal text prompt. The base model plans acti
 Use Pi 1.5.2 and `pi-subagents` 0.89.1. Install the extension from npm:
 
 ```sh
-pi install npm:pi-subagent-model-router@0.1.0
+pi install npm:pi-subagent-model-router@0.2.0
 ```
 
 The router requires `pi-subagents` 0.89.1. If it is not already loaded in Pi, install it first:
