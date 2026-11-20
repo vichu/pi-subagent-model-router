@@ -8,6 +8,7 @@ import type {
 } from "pi-subagents/delegation";
 
 import { type ModelChoice, parseConfig } from "./config.ts";
+import { formatHistory, type RunReceipt, runEntryType } from "./history.ts";
 import { determineRoute } from "./router.ts";
 
 // Public wire contract. pi-subagents is loaded separately as a Pi extension,
@@ -25,7 +26,6 @@ function launch(
   request: SubagentDelegationRequest,
   signal: AbortSignal,
 ): Promise<SubagentDelegationResponse> {
-  signal.throwIfAborted();
   const { requestId, ownerRunId, nodeId } = request;
   return new Promise((resolve, reject) => {
     const off = events.on(delegation.response, (payload) => {
@@ -53,14 +53,32 @@ export default function routerSpike(pi: ExtensionAPI) {
   const session = new AbortController();
   pi.on("session_shutdown", () => { session.abort(); });
 
-  async function runChild(ctx: ExtensionCommandContext, task: string, route: string, { model, thinking }: ModelChoice) {
+  pi.registerCommand("router-history", {
+    description: "Show router-launched subagents and their models on this session branch",
+    async handler(_args, ctx) {
+      ctx.ui.notify(formatHistory(ctx.sessionManager.getBranch()), "info");
+    },
+  });
+
+  async function runChild(ctx: ExtensionCommandContext, task: string, route: string, requested: ModelChoice, backend: string | null) {
+    const signal = AbortSignal.any([session.signal, AbortSignal.timeout(childTimeoutMs + 5_000)]);
+    signal.throwIfAborted();
+    const { model, thinking } = requested;
+    const requestId = randomUUID();
+    const agent = "router-spike-worker";
+    const receipt: RunReceipt = { requestId, agent, route, backend, requested, status: "submitted" };
+    pi.appendEntry(runEntryType, receipt);
     const response = await launch(pi.events, {
-      requestId: randomUUID(), ownerRunId: randomUUID(), nodeId: "router",
-      agent: "router-spike-worker", task, context: "fresh", cwd: ctx.cwd, model, thinking,
+      requestId, ownerRunId: randomUUID(), nodeId: "router",
+      agent, task, context: "fresh", cwd: ctx.cwd, model, thinking,
       timeoutMs: childTimeoutMs,
       toolBudget: { hard: 0, block: "*" }, intercomBridge: { mode: "off" },
       result: { kind: "text" },
-    }, AbortSignal.any([session.signal, AbortSignal.timeout(childTimeoutMs + 5_000)]));
+    }, signal);
+    const effective = response.status === "invalid_request" ? {} : {
+      runId: response.runId, model: response.model, thinking: response.thinking,
+    };
+    pi.appendEntry<RunReceipt>(runEntryType, { ...receipt, ...effective, status: response.status });
     if (response.status !== "completed" || response.result?.kind !== "text") {
       throw new Error(`Child did not return text successfully (${response.status}).${response.error ? ` ${response.error}` : ""}`);
     }
@@ -86,7 +104,7 @@ export default function routerSpike(pi: ExtensionAPI) {
           if (decision.notes.length) ctx.ui.notify(decision.notes.join("\n"), "warning");
           if (!decision.route) warnedAboutBase = true;
         }
-        await runChild(ctx, task, decision.route ?? "base fallback", decision.target);
+        await runChild(ctx, task, decision.route ?? "base fallback", decision.target, decision.backend);
       } catch (error) {
         ctx.ui.notify(`Router: ${String(error)}`, "error");
       }
@@ -125,7 +143,7 @@ export default function routerSpike(pi: ExtensionAPI) {
         }
         const route = answer.choice;
         const [model, thinking] = route === "writing" ? [writingModel, "off"] as const : [analysisModel, "low"] as const;
-        await runChild(ctx, task, route, { model, thinking });
+        await runChild(ctx, task, route, { model, thinking }, `${provider}/${id}`);
       } catch (error) {
         ctx.ui.notify(`Router spike: ${String(error)}`, "error");
       }

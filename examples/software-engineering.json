@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "base_agent": { "model": "anthropic/claude-haiku-4-5", "thinking": "off" },
+  "routes": [
+    { "name": "codebase_orientation", "label": "Codebase orientation", "model": "anthropic/claude-haiku-4-5", "thinking": "off", "when_to_use": "The deliverable is a map or explanation of how existing code works, without diagnosing a failure or proposing a change." },
+    { "name": "feature_implementation", "label": "Feature implementation", "model": "anthropic/claude-sonnet-4-6", "thinking": "medium", "when_to_use": "The deliverable is code that adds or changes intended product behavior. It is not a repair for a behavior already expected to work." },
+    { "name": "bug_diagnosis", "label": "Bug diagnosis and repair", "model": "anthropic/claude-sonnet-4-6", "thinking": "high", "when_to_use": "The brief describes incorrect behavior and asks for a root cause or a targeted fix. Tests to verify that fix are secondary." },
+    { "name": "test_authoring", "label": "Test authoring", "model": "anthropic/claude-sonnet-4-6", "thinking": "low", "when_to_use": "The primary deliverable is test cases, fixtures, or a coverage plan for an existing behavior, not a production-code fix." },
+    { "name": "code_review", "label": "Code review", "model": "anthropic/claude-sonnet-4-6", "thinking": "high", "when_to_use": "The deliverable is findings on an existing patch or code snippet, with evidence and severity, rather than writing the patch." },
+    { "name": "refactoring", "label": "Behavior-preserving refactoring", "model": "anthropic/claude-sonnet-4-6", "thinking": "medium", "when_to_use": "The deliverable is a structural code change that keeps observable behavior intact, such as extracting duplicated logic." },
+    { "name": "architecture_design", "label": "Architecture and design", "model": "anthropic/claude-sonnet-4-6", "thinking": "high", "when_to_use": "The deliverable is a design proposal, decision record, or trade-off analysis for a new or substantially changed system, rather than implementation code." },
+    { "name": "performance_analysis", "label": "Performance analysis", "model": "anthropic/claude-sonnet-4-6", "thinking": "high", "when_to_use": "The deliverable is a diagnosis, benchmark, or targeted optimization for latency, throughput, CPU, or memory. Performance is the central goal." },
+    { "name": "engineering_documentation", "label": "Engineering documentation", "model": "anthropic/claude-haiku-4-5", "thinking": "off", "when_to_use": "The deliverable is prose for users or maintainers, such as setup instructions, API usage examples, release notes, or a runbook." }
+  ]
+}
