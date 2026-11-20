@@ -1,21 +1,111 @@
 {
   "version": 1,
-  "enabled": true,
-  "base_agent": { "model": "anthropic/claude-haiku-4-5", "thinking": "off" },
   "routes": [
-    { "name": "simple_cli_operations", "label": "Routine CLI and Git operations", "model": "openai-codex/gpt-6-luna", "thinking": "low", "when_to_use": "The deliverable is the result of a straightforward shell operation with a clear command and target, such as grep or rg for a known term, git status or diff, a routine Git operation, listing files, or running a known local command. If commands are only steps toward implementing, diagnosing, designing, or working on a LaTeX document, choose the route for that deliverable instead." },
-    { "name": "codebase_orientation", "label": "Codebase orientation", "model": "anthropic/claude-haiku-4-5", "thinking": "off", "when_to_use": "The deliverable is a map or explanation of how existing code works, without diagnosing a failure or proposing a change." },
-    { "name": "simple_coding", "label": "Simple coding", "model": "openai-codex/gpt-6-luna", "thinking": "low", "when_to_use": "Implement a well-specified product change in one file or a small, self-contained module. The behavior and acceptance criteria are clear, and the change does not require tracing other components." },
-    { "name": "standard_coding", "label": "Standard coding · large codebase", "model": "openai-codex/gpt-6.2-sol", "thinking": "medium", "when_to_use": "Implement a product change whose impact spans multiple modules or layers of one repository. The work requires tracing existing interfaces and integration points, but the product behavior and repository boundary are established." },
-    { "name": "complex_coding", "label": "Complex coding · cross-product", "model": "openai-codex/gpt-6.2-sol", "thinking": "high", "when_to_use": "Implement an inherently complex change across multiple repositories that requires product-wide context. The work depends on coordinating behavior or compatibility across services, shared libraries, or clients. Multiple files in one repository alone do not qualify." },
-    { "name": "bug_diagnosis", "label": "Bug diagnosis and repair", "model": "anthropic/claude-sonnet-4-6", "thinking": "high", "when_to_use": "The brief describes incorrect behavior and asks for a root cause or a targeted fix. Tests to verify that fix are secondary." },
-    { "name": "test_authoring", "label": "Test authoring", "model": "anthropic/claude-sonnet-4-6", "thinking": "low", "when_to_use": "The primary deliverable is test cases, fixtures, or a coverage plan for an existing behavior, not a production-code fix." },
-    { "name": "code_review", "label": "Code review", "model": "anthropic/claude-sonnet-4-6", "thinking": "high", "when_to_use": "The deliverable is findings on an existing patch or code snippet, with evidence and severity, rather than writing the patch." },
-    { "name": "refactoring", "label": "Behavior-preserving refactoring", "model": "anthropic/claude-sonnet-4-6", "thinking": "medium", "when_to_use": "The deliverable is a structural code change that keeps observable behavior intact, such as extracting duplicated logic." },
-    { "name": "architecture_design", "label": "Architecture discussion and design", "model": "anthropic/claude-opus-5-5", "thinking": "medium", "when_to_use": "Discuss architectural trade-offs, propose a design, or write a decision record for a bounded feature or component with known interfaces. The deliverable is design guidance, not implementation or a high-risk system migration plan." },
-    { "name": "complex_architecture", "label": "Complex architecture and high-risk refactor design", "model": "anthropic/claude-opus-5-5", "thinking": "high", "when_to_use": "Design or evaluate a system-wide architecture change or a large, high-risk refactor. The plan must reason about coupled subsystems, compatibility, migration, or rollout and rollback because mistakes can affect existing users or data. Use this for the design discussion or plan, not for implementing an agreed design." },
-    { "name": "performance_analysis", "label": "Performance analysis", "model": "anthropic/claude-sonnet-4-6", "thinking": "high", "when_to_use": "The deliverable is a diagnosis, benchmark, or targeted optimization for latency, throughput, CPU, or memory. Performance is the central goal." },
-    { "name": "latex_authoring", "label": "LaTeX documents and typesetting", "model": "anthropic/claude-opus-5-5", "thinking": "medium", "when_to_use": "The deliverable is a LaTeX document or help with its typesetting or build: writing or editing TeX source, equations, tables, figures, citations, macros, templates, or diagnosing LaTeX compilation and layout issues. The work depends on LaTeX rather than just writing general prose." },
-    { "name": "engineering_documentation", "label": "Engineering documentation", "model": "anthropic/claude-haiku-4-5", "thinking": "off", "when_to_use": "The deliverable is prose for users or maintainers, such as setup instructions, API usage examples, release notes, or a runbook." }
-  ]
+    {
+      "model": "openai-codex/gpt-6-luna",
+      "thinking": "low",
+      "name": "simple_cli_operations",
+      "label": "Routine CLI and Git operations",
+      "when_to_use": "The deliverable is the result of a straightforward shell operation with a clear command and target, such as grep or rg for a known term, git status or diff, a routine Git operation, listing files, or running a known local command. If commands are only steps toward implementing, diagnosing, designing, or working on a LaTeX document, choose the route for that deliverable instead."
+    },
+    {
+      "model": "openai-codex/gpt-6-luna",
+      "thinking": "high",
+      "name": "codebase_orientation",
+      "label": "Codebase orientation",
+      "when_to_use": "The deliverable is a map or explanation of how existing code works, without diagnosing a failure or proposing a change."
+    },
+    {
+      "model": "openai-codex/gpt-6-luna",
+      "thinking": "low",
+      "name": "simple_coding",
+      "label": "Simple coding",
+      "when_to_use": "Implement a well-specified product change in one file or a small, self-contained module. The behavior and acceptance criteria are clear, and the change does not require tracing other components."
+    },
+    {
+      "model": "openai-codex/gpt-6.2-sol",
+      "thinking": "medium",
+      "name": "standard_coding",
+      "label": "Standard coding · large codebase",
+      "when_to_use": "Implement a product change whose impact spans multiple modules or layers of one repository. The work requires tracing existing interfaces and integration points, but the product behavior and repository boundary are established."
+    },
+    {
+      "model": "openai-codex/gpt-6.2-sol",
+      "thinking": "high",
+      "name": "complex_coding",
+      "label": "Complex coding · cross-product",
+      "when_to_use": "Implement an inherently complex change across multiple repositories that requires product-wide context. The work depends on coordinating behavior or compatibility across services, shared libraries, or clients. Multiple files in one repository alone do not qualify."
+    },
+    {
+      "model": "openai-codex/gpt-6-luna",
+      "thinking": "high",
+      "name": "bug_diagnosis",
+      "label": "Bug diagnosis and repair",
+      "when_to_use": "The brief describes incorrect behavior and asks for a root cause or a targeted fix. Tests to verify that fix are secondary."
+    },
+    {
+      "model": "openai-codex/gpt-6-sol",
+      "thinking": "low",
+      "name": "test_authoring",
+      "label": "Test authoring",
+      "when_to_use": "The primary deliverable is test cases, fixtures, or a coverage plan for an existing behavior, not a production-code fix."
+    },
+    {
+      "model": "openai-codex/gpt-6-luna",
+      "thinking": "high",
+      "name": "code_review",
+      "label": "Code review",
+      "when_to_use": "The deliverable is findings on an existing patch or code snippet, with evidence and severity, rather than writing the patch."
+    },
+    {
+      "model": "openai-codex/gpt-5.6-sol",
+      "thinking": "medium",
+      "name": "refactoring",
+      "label": "Behavior-preserving refactoring",
+      "when_to_use": "The deliverable is a structural code change that keeps observable behavior intact, such as extracting duplicated logic."
+    },
+    {
+      "model": "anthropic/claude-opus-5-5",
+      "thinking": "medium",
+      "name": "architecture_design",
+      "label": "Architecture discussion and design",
+      "when_to_use": "Discuss architectural trade-offs, propose a design, or write a decision record for a bounded feature or component with known interfaces. The deliverable is design guidance, not implementation or a high-risk system migration plan."
+    },
+    {
+      "model": "anthropic/claude-opus-5-5",
+      "thinking": "high",
+      "name": "complex_architecture",
+      "label": "Complex architecture and high-risk refactor design",
+      "when_to_use": "Design or evaluate a system-wide architecture change or a large, high-risk refactor. The plan must reason about coupled subsystems, compatibility, migration, or rollout and rollback because mistakes can affect existing users or data. Use this for the design discussion or plan, not for implementing an agreed design."
+    },
+    {
+      "model": "openai-codex/gpt-6-luna",
+      "thinking": "medium",
+      "name": "performance_analysis",
+      "label": "Performance analysis",
+      "when_to_use": "The deliverable is a diagnosis, benchmark, or targeted optimization for latency, throughput, CPU, or memory. Performance is the central goal."
+    },
+    {
+      "model": "anthropic/claude-opus-5-5",
+      "thinking": "medium",
+      "name": "latex_authoring",
+      "label": "LaTeX documents and typesetting",
+      "when_to_use": "The deliverable is a LaTeX document or help with its typesetting or build: writing or editing TeX source, equations, tables, figures, citations, macros, templates, or diagnosing LaTeX compilation and layout issues. The work depends on LaTeX rather than just writing general prose."
+    },
+    {
+      "model": "anthropic/claude-opus-5-5",
+      "thinking": "medium",
+      "name": "engineering_documentation",
+      "label": "Engineering documentation",
+      "when_to_use": "The deliverable is prose for users or maintainers, such as setup instructions, API usage examples, release notes, or a runbook."
+    }
+  ],
+  "classifiers": [
+    "typesafe/jev-latest",
+    "openai/gpt-6-luna"
+  ],
+  "base_agent": {
+    "model": "openai-codex/gpt-6.2-sol",
+    "thinking": "medium"
+  }
 }
