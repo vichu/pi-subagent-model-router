@@ -27,9 +27,13 @@ function setup() {
   const classify = vi.fn().mockResolvedValue(answer("writing"));
   const on = vi.fn();
   const registerCommand = vi.fn();
+  const registerTool = vi.fn();
+  const setActiveTools = vi.fn();
+  const setModel = vi.fn().mockResolvedValue(true);
+  const setThinkingLevel = vi.fn();
   const entries: unknown[] = [{ type: "message" }, { type: "custom", customType: "other" }, { type: "custom", customType: runEntryType }];
   const appendEntry = vi.fn((customType, data) => entries.push({ type: "custom", customType, data }));
-  registerRouter({ on, registerCommand, appendEntry, getThinkingLevel: () => "off", events: {
+  registerRouter({ on, registerCommand, registerTool, appendEntry, setModel, setThinkingLevel, getActiveTools: () => ["read", "bash"], setActiveTools, getThinkingLevel: () => "off", events: {
     emit: bus.emit.bind(bus),
     on: (event: string, listener: (data: unknown) => void) => {
       bus.on(event, listener);
@@ -52,7 +56,15 @@ function setup() {
     return open({ model });
   };
   const start = (hasUI = true) => on.mock.calls.find(([event]) => event === "session_start")![1]({}, { ...ctx, hasUI });
-  return { bus, notify, setStatus, start, appendEntry, getAvailableOfType, classify, registerCommand, select, open, history, run, shutdown: () => on.mock.calls[0][1]() };
+  const before = async (messageType = "user", images: unknown[] = []) => {
+    const options = { selectedTools: ["read", "bash"], promptGuidelines: [] };
+    await on.mock.calls.find(([event]) => event === "before_agent_start")![1]({ messageType, images, systemPromptOptions: options }, ctx);
+    return options;
+  };
+  const settle = () => on.mock.calls.find(([event]) => event === "agent_settled")![1]();
+  const tool = registerTool.mock.calls[0][0];
+  const delegate = (tasks: Array<{ brief: string; access: "text" | "workspace" }>, signal?: AbortSignal, update?: ReturnType<typeof vi.fn>) => tool.execute("call", { tasks }, signal, update, ctx);
+  return { bus, notify, setStatus, start, before, settle, delegate, setActiveTools, setModel, setThinkingLevel, appendEntry, getAvailableOfType, classify, registerCommand, select, open, history, run, shutdown: () => on.mock.calls[0][1]() };
 }
 
 test.each([
@@ -91,6 +103,78 @@ test("initializes the footer from config on session start", async () => {
   vi.mocked(readFile).mockRejectedValueOnce(new Error("file not found"));
   await start();
   expect(setStatus).toHaveBeenLastCalledWith("pi-subagent-model-router", "Router: config unavailable");
+});
+
+test("uses the configured orchestrator on normal prompts and restores the previous tools", async () => {
+  const { before, settle, setModel, setThinkingLevel, setActiveTools } = setup();
+  settle();
+  expect(setActiveTools).not.toHaveBeenCalled();
+  vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes, base_agent: { model: "demo/base", thinking: "low" } }));
+  expect(await before()).toMatchObject({ selectedTools: ["subagent_router_delegate"], promptGuidelines: [expect.stringContaining("coordinating user tasks")] });
+  expect(setModel).toHaveBeenCalledTimes(1);
+  expect(setThinkingLevel).toHaveBeenCalledWith("low");
+  settle();
+  expect(setActiveTools).toHaveBeenCalledWith(["read", "bash"]);
+});
+
+test("bypasses automatic routing for attachments, custom runs, and disabled or unreadable config", async () => {
+  const { before, delegate, setStatus } = setup();
+  expect((await before("custom")).selectedTools).toEqual(["read", "bash"]);
+  expect((await before("user", [{}])).selectedTools).toEqual(["read", "bash"]);
+  expect(readFile).not.toHaveBeenCalled();
+  vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes, enabled: false }));
+  expect((await before()).selectedTools).toEqual(["read", "bash"]);
+  vi.mocked(readFile).mockRejectedValueOnce(new Error("read error"));
+  expect((await before()).selectedTools).toEqual(["read", "bash"]);
+  expect(setStatus).toHaveBeenLastCalledWith("pi-subagent-model-router", "Router: config unavailable");
+  await expect(delegate([{ brief: "Draft", access: "text" }])).rejects.toThrow("not active");
+});
+
+test("can use the current model if Pi cannot set the configured base model", async () => {
+  const { before, setModel, setThinkingLevel, notify } = setup();
+  setModel.mockResolvedValue(false);
+  vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes, base_agent: { model: "demo/base", thinking: "low" } }));
+  expect((await before()).selectedTools).toEqual(["subagent_router_delegate"]);
+  expect(notify).toHaveBeenCalledWith(expect.stringContaining("using the current Pi model"), "warning");
+  expect(setThinkingLevel).not.toHaveBeenCalled();
+});
+
+test("routes a workspace task to the worker and returns its output to the base model", async () => {
+  const { before, delegate, bus } = setup();
+  const update = vi.fn();
+  await before();
+  bus.on(requestEvent, (req: SubagentDelegationRequest) => {
+    expect(req).toMatchObject({ agent: "worker", model: "demo/writer" });
+    expect(req.toolBudget).toBeUndefined();
+    bus.emit(responseEvent, { ...req, status: "completed", result: { kind: "text", text: "workspace findings" } });
+  });
+  const result = await delegate([{ brief: "Inspect the file", access: "workspace" }], new AbortController().signal, update);
+  expect(result.content[0].text).toContain("workspace findings");
+  expect(result.isError).toBe(false);
+  expect(update.mock.calls.map(([data]) => data.content[0].text)).toEqual(["Task 1: classifying", "Task 1: writing → demo/writer (off)"]);
+});
+
+test("allows parallel text children, preserves partial results, and rejects batches with workspace work", async () => {
+  const { before, delegate, bus } = setup();
+  await before();
+  await expect(delegate([{ brief: "A", access: "text" }, { brief: "B", access: "workspace" }])).rejects.toThrow("one at a time");
+  const requests: SubagentDelegationRequest[] = [];
+  bus.on(requestEvent, (req: SubagentDelegationRequest) => {
+    requests.push(req);
+    if (requests.length === 2) {
+      bus.emit(responseEvent, { ...requests[0], status: "failed", error: "test failure" });
+      bus.emit(responseEvent, { ...requests[1], status: "completed", result: { kind: "text", text: "second result" } });
+    }
+  });
+  const result = await delegate([{ brief: "A", access: "text" }, { brief: "B", access: "text" }]);
+  expect(result.content[0].text).toMatch(/test failure[\s\S]*second result/);
+  expect(result.isError).toBe(true);
+  expect(requests.every((req) => req.toolBudget?.hard === 0)).toBe(true);
+  bus.on(requestEvent, (req: SubagentDelegationRequest) => bus.emit(responseEvent, { ...req, status: "completed", result: { kind: "text", text: "fallback result" } }));
+  vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes, classifiers: [], base_agent: { model: "demo/base", thinking: "off" } }));
+  expect((await delegate([{ brief: "Fallback", access: "text" }])).content[0].text).toContain("base fallback: requested demo/base");
+  vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes, enabled: false }));
+  await expect(delegate([{ brief: "C", access: "text" }])).rejects.toThrow("disabled");
 });
 
 test("opens settings from home and returns there when the submenu closes", async () => {

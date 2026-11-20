@@ -1,6 +1,6 @@
 # pi-subagent-model-router
 
-Config-driven prototype: route a task brief to a model and thinking level, then start a foreground `pi-subagents` worker with those settings. The prototype uses a tool-free worker and an explicit command; automatic delegation and base-agent orchestration are not implemented yet.
+When routing is enabled, give Pi a normal text prompt. The base model plans actionable work, delegates through the routing matrix, and synthesizes the results. You don’t need to request a subagent or use a slash command.
 
 ## Setup
 
@@ -14,7 +14,11 @@ cp examples/router-spike-worker.md .pi/agents/
 pi -e ./src/index.ts
 ```
 
-Trust this checkout when prompted so `pi-subagents` can discover the generic tool-free worker. Its blank `tools:` field is intentional. It is a launcher requirement, not a routing persona; all routes use the same worker.
+Trust this checkout when prompted so `pi-subagents` can discover the generic tool-free worker. Its blank `tools:` field is intentional. Text-only briefs use this worker. Tasks that need workspace access (including CLI commands and edits) use `pi-subagents`’ built-in `worker` in the current directory. Enable routing only where you trust those workspace tools and agent definitions; they are not a filesystem sandbox.
+
+## Automatic delegation
+
+The base model receives the delegation tool instead of direct execution tools for the turn. Simple conversation and clarifications can stay local. It can run up to three independent text tasks in parallel; workspace tasks are dispatched one at a time. Dependent tasks are delegated after the prerequisite results return. Progress appears on the delegation tool call, and completed attempts appear under **Session history**. Image prompts and extension-triggered turns are not automatically routed. Disabling routing preserves ordinary Pi prompt handling.
 
 ## Router workspace
 
@@ -33,7 +37,7 @@ The repo’s [`router.json`](router.json) remains the only routing config. The r
 | `routes` | 1–32 rows. Each has a unique lowercase `name` (letters, digits, underscores; start with a letter), a human-readable `label`, `when_to_use` criteria, a provider-qualified `model`, and `thinking`. |
 | `classifiers` | Optional ordered list of up to four classifier IDs; defaults to `typesafe/jev-latest`, then `openai/gpt-6-luna`. `[]` skips these services. |
 | `routing_model` | Optional chat `{ "model": "provider/id", "thinking": "low" }` tried if no classifier can return a valid answer. |
-| `base_agent` | Optional `{ "model": "provider/id", "thinking": "off" }` used for the fallback child. If omitted, the child uses the current Pi model and thinking. This does not change the parent session model. |
+| `base_agent` | Optional `{ "model": "provider/id", "thinking": "off" }` for the orchestrator and fallback worker. On an enabled text turn, Pi selects this model and thinking for the session. If omitted, the current Pi settings are used. |
 
 Supported thinking settings are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; Pi may clamp a requested level to what the model supports. Put the level in `thinking`, not in the model ID.
 
@@ -43,7 +47,7 @@ The classifier receives the brief, route names, labels, and criteria—not worke
 
 [`router.json`](router.json) includes three implementation tiers: Luna 6 (`low`) for localized edits, Sol 6.2 (`medium`) for multi-module work within one repo, and Sol 6.2 (`high`) for inherently complex changes that need product context across repos. Routine CLI and Git work uses Luna 6 (`low`); architecture discussions use Opus 5.5 (`medium`), LaTeX work uses Opus 5.5 (`medium`), and high-risk architecture or refactor planning uses Opus 5.5 (`high`).
 
-Open `/subagent-router` → **Run a brief** and submit one of the examples below. These are routing checks: the current worker can discuss the brief or return a sketch, but cannot execute commands or inspect or edit files. Normal Pi tool calls are not intercepted.
+Submit one of the examples below as a normal Pi prompt. Alternatively, use `/subagent-router` → **Run a brief** to test routing with a tool-free worker.
 
 | Sample brief | Expected route |
 | --- | --- |
