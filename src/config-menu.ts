@@ -5,6 +5,7 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { pickConfigItem } from "./config-picker.ts";
 import { type ModelChoice, parseConfig, type Route, routerCommand, splitModel } from "./config.ts";
+import { setRouterStatus } from "./router-status.ts";
 
 async function pickThinking(ctx: ExtensionCommandContext, modelId: string, current: ModelChoice["thinking"]) {
   const model = ctx.modelRegistry.find(...splitModel(modelId));
@@ -102,7 +103,7 @@ async function saveConfig(path: URL, original: string, contents: string, signal:
   }
 }
 
-export async function showConfigMenu(ctx: ExtensionCommandContext, path: URL, signal: AbortSignal) {
+export async function showConfigMenu(ctx: ExtensionCommandContext, path: URL, signal: AbortSignal, screen: "rubric" | "status" = "rubric") {
   const { ui } = ctx;
   if (!ctx.hasUI) {
     ui.notify(`/${routerCommand} requires an interactive Pi UI.`, "warning");
@@ -111,6 +112,7 @@ export async function showConfigMenu(ctx: ExtensionCommandContext, path: URL, si
   try {
     const original = await readFile(path, { encoding: "utf8", signal });
     const config = parseConfig(original);
+    setRouterStatus(ui, config.enabled);
     const rows = config.routes.map((row) => ({
       value: row.name, label: row.label, description: `${row.model} · ${row.thinking}`,
       preview: `${row.name} · ${row.model} (${row.thinking})\n\nWhen to use: ${row.when_to_use}`,
@@ -118,11 +120,11 @@ export async function showConfigMenu(ctx: ExtensionCommandContext, path: URL, si
     const status = config.enabled ? "Enabled" : "Disabled";
     const switchItem = { value: "Router status", label: `Router status: ${status}`, preview: "Enable or disable routing without changing the rubric." };
     const actions = ["Add route", "Classifier order", "Base model", "Routing model"].map((value) => ({ value, label: value }));
-    const action = await pickConfigItem(ctx, "Subagent router · rubric", [switchItem, ...rows, ...actions], { hint: `${status} · ${rows.length} routes · router.json` });
+    const action = screen === "status" ? switchItem.value : await pickConfigItem(ctx, "Subagent router · rubric", [switchItem, ...rows, ...actions], { hint: `${status} · ${rows.length} routes · router.json` });
     if (action === undefined) return;
     if (action === "Router status") {
       const choices = ["Enabled", "Disabled"].map((value) => ({ value, label: value }));
-      const next = await pickConfigItem(ctx, "Router status", choices, { current: status, hint: "Applies to new router runs" });
+      const next = await pickConfigItem(ctx, "Router status", choices, { current: status, hint: `Currently ${status.toLowerCase()} · applies to new router runs` });
       if (next !== "Enabled" && next !== "Disabled") return;
       config.enabled = next === "Enabled";
     } else if (action === "Add route") {
@@ -150,6 +152,7 @@ export async function showConfigMenu(ctx: ExtensionCommandContext, path: URL, si
     const normalized = parseConfig(JSON.stringify(draft));
     if (!await ui.confirm("Save router.json?", "The next router run will use these settings.")) return;
     await saveConfig(path, original, `${JSON.stringify({ version: 1, ...normalized }, null, 2)}\n`, signal);
+    setRouterStatus(ui, normalized.enabled);
     ui.notify("Saved router.json. The next router run will use it; no reload needed.", "info");
   } catch (error) {
     ui.notify(`Router config: ${String(error)}`, "error");

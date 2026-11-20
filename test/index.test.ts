@@ -22,6 +22,7 @@ function setup() {
   vi.mocked(readFile).mockReset().mockResolvedValue(JSON.stringify({ version: 1, routes }));
   const bus = new EventEmitter();
   const notify = vi.fn();
+  const setStatus = vi.fn();
   const getAvailableOfType = vi.fn().mockResolvedValue([{ id: "jev-latest" }]);
   const classify = vi.fn().mockResolvedValue(answer("writing"));
   const on = vi.fn();
@@ -38,7 +39,7 @@ function setup() {
   const handler = registerCommand.mock.calls[0][1].handler as (input: string, ctx: ExtensionCommandContext) => Promise<void>;
   const select = vi.fn<(title: string, options: string[]) => Promise<string | undefined>>().mockResolvedValue(undefined);
   const editor = vi.fn<(title: string) => Promise<string | undefined>>();
-  const ctx = { cwd: "/demo", hasUI: true, mode: "rpc", ui: { notify, select, editor }, sessionManager: { getBranch: () => entries }, modelRegistry: { getAvailableOfType, classify, find: vi.fn().mockReturnValue({}), hasConfiguredAuth: () => true } } as unknown as ExtensionCommandContext;
+  const ctx = { cwd: "/demo", hasUI: true, mode: "rpc", ui: { notify, select, editor, setStatus }, sessionManager: { getBranch: () => entries }, modelRegistry: { getAvailableOfType, classify, find: vi.fn().mockReturnValue({}), hasConfiguredAuth: () => true } } as unknown as ExtensionCommandContext;
   const open = (overrides: Partial<ExtensionCommandContext> = {}) => handler("", { ...ctx, ...overrides });
   const history = async () => {
     select.mockResolvedValueOnce("Session history");
@@ -50,7 +51,8 @@ function setup() {
     editor.mockResolvedValueOnce(input);
     return open({ model });
   };
-  return { bus, notify, appendEntry, getAvailableOfType, classify, registerCommand, select, open, history, run, shutdown: () => on.mock.calls[0][1]() };
+  const start = (hasUI = true) => on.mock.calls.find(([event]) => event === "session_start")![1]({}, { ...ctx, hasUI });
+  return { bus, notify, setStatus, start, appendEntry, getAvailableOfType, classify, registerCommand, select, open, history, run, shutdown: () => on.mock.calls[0][1]() };
 }
 
 test.each([
@@ -80,11 +82,34 @@ test("registers only the workspace command and checks UI availability", async ()
   expect(notify).toHaveBeenCalledWith("/subagent-router requires an interactive Pi UI.", "warning");
 });
 
+test("initializes the footer from config on session start", async () => {
+  const { start, setStatus } = setup();
+  await start(false);
+  expect(readFile).not.toHaveBeenCalled();
+  await start();
+  expect(setStatus).toHaveBeenLastCalledWith("pi-subagent-model-router", "Router: enabled");
+  vi.mocked(readFile).mockRejectedValueOnce(new Error("file not found"));
+  await start();
+  expect(setStatus).toHaveBeenLastCalledWith("pi-subagent-model-router", "Router: config unavailable");
+});
+
 test("opens settings from home and returns there when the submenu closes", async () => {
   const { open, select } = setup();
   select.mockResolvedValueOnce("Rubric and settings");
   await open();
   expect(select.mock.calls.map(([title]) => title)).toEqual(["Subagent router · home", "Subagent router · rubric", "Subagent router · home"]);
+});
+
+test("opens Router status directly from home and backs out without running a brief", async () => {
+  const { open, select, classify } = setup();
+  select.mockResolvedValueOnce("Router status");
+  await open();
+  expect(select.mock.calls).toEqual([
+    ["Subagent router · home", ["Run a brief", "Rubric and settings", "Session history", "Router status"]],
+    ["Router status", ["Enabled", "Disabled"]],
+    ["Subagent router · home", ["Run a brief", "Rubric and settings", "Session history", "Router status"]],
+  ]);
+  expect(classify).not.toHaveBeenCalled();
 });
 
 test("cancels brief entry back to home without reading configuration", async () => {
@@ -114,12 +139,13 @@ test("applies updated rubric criteria and launch settings on the next run in the
 });
 
 test("disabling blocks all routing work and re-enabling works in the same session", async () => {
-  const { bus, classify, getAvailableOfType, notify, run, appendEntry } = setup();
+  const { bus, classify, getAvailableOfType, notify, setStatus, run, appendEntry } = setup();
   const request = vi.fn((req: SubagentDelegationRequest) => bus.emit(responseEvent, { ...req, status: "completed", result: { kind: "text", text: "done" } }));
   bus.on(requestEvent, request);
   vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes, enabled: false }));
   await run();
   expect(notify).toHaveBeenCalledWith(expect.stringContaining("routing is disabled"), "info");
+  expect(setStatus).toHaveBeenLastCalledWith("pi-subagent-model-router", "Router: disabled");
   expect(getAvailableOfType).not.toHaveBeenCalled();
   expect(classify).not.toHaveBeenCalled();
   expect(request).not.toHaveBeenCalled();
@@ -127,6 +153,7 @@ test("disabling blocks all routing work and re-enabling works in the same sessio
   vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes, enabled: true }));
   await run();
   expect(request).toHaveBeenCalledTimes(1);
+  expect(setStatus).toHaveBeenLastCalledWith("pi-subagent-model-router", "Router: enabled");
 });
 
 test("shows one persisted row per request, including reported effective settings", async () => {

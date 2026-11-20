@@ -10,6 +10,7 @@ import { showConfigMenu } from "./config-menu.ts";
 import { pickConfigItem } from "./config-picker.ts";
 import { type ModelChoice, parseConfig, routerCommand } from "./config.ts";
 import { showHistory, type RunReceipt, runEntryType } from "./history.ts";
+import { setRouterStatus } from "./router-status.ts";
 import { determineRoute } from "./router.ts";
 
 // Public wire contract. pi-subagents is loaded separately as a Pi extension,
@@ -54,6 +55,15 @@ function launch(
 export default function router(pi: ExtensionAPI) {
   const session = new AbortController();
   pi.on("session_shutdown", () => { session.abort(); });
+  pi.on("session_start", async (_event, ctx) => {
+    if (!ctx.hasUI) return;
+    try {
+      const config = parseConfig(await readFile(configFile, { encoding: "utf8", signal: session.signal }));
+      setRouterStatus(ctx.ui, config.enabled);
+    } catch {
+      setRouterStatus(ctx.ui, "unavailable");
+    }
+  });
 
   async function runChild(ctx: ExtensionCommandContext, task: string, route: string, requested: ModelChoice, backend: string | null) {
     const signal = AbortSignal.any([session.signal, AbortSignal.timeout(childTimeoutMs + 5_000)]);
@@ -84,8 +94,9 @@ export default function router(pi: ExtensionAPI) {
   async function runBrief(ctx: ExtensionCommandContext, task: string) {
     try {
       const config = parseConfig(await readFile(configFile, { encoding: "utf8", signal: session.signal }));
+      setRouterStatus(ctx.ui, config.enabled);
       if (!config.enabled) {
-        ctx.ui.notify("Subagent routing is disabled. Re-enable it under Rubric and settings → Router status.", "info");
+        ctx.ui.notify("Subagent routing is disabled. Re-enable it under Router status.", "info");
         return;
       }
       const current = ctx.model && { model: `${ctx.model.provider}/${ctx.model.id}`, thinking: pi.getThinkingLevel() };
@@ -104,6 +115,7 @@ export default function router(pi: ExtensionAPI) {
     { value: "Run a brief", label: "Run a brief", description: "Classify a task and start a worker" },
     { value: "Rubric and settings", label: "Rubric and settings", description: "Browse routes, edit models, or toggle routing" },
     { value: "Session history", label: "Session history", description: "Inspect routes and effective models used" },
+    { value: "Router status", label: "Router status", description: "Enable or disable new runs without reloading" },
   ];
   pi.registerCommand(routerCommand, {
     description: "Open the inline subagent router workspace",
@@ -131,6 +143,9 @@ export default function router(pi: ExtensionAPI) {
             break;
           case "Session history":
             await showHistory(ctx);
+            break;
+          case "Router status":
+            await showConfigMenu(ctx, configFile, session.signal, "status");
             break;
           default:
             return;

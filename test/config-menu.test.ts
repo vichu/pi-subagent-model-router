@@ -28,6 +28,7 @@ function setup(selects: Array<string | undefined> = [], edits: Array<string | un
     editor: vi.fn(async () => edits.shift()),
     confirm: vi.fn().mockResolvedValue(true),
     notify: vi.fn(),
+    setStatus: vi.fn(),
   };
   const modelRegistry = { getAvailable: vi.fn(() => models), find: vi.fn((provider: string, id: string) => models.find((model) => model.provider === provider && model.id === id)) };
   const ctx = { hasUI, ui, modelRegistry, mode: "rpc" } as unknown as ExtensionCommandContext;
@@ -105,8 +106,14 @@ test("toggles routing through the config menu without changing routes", async ()
   await disable.run();
   expect(disable.ui.select).toHaveBeenCalledWith("Router status", ["Enabled", "Disabled"]);
   expect(await stored()).toMatchObject({ enabled: false, routes: base.routes });
-  await setup(["Router status", "Enabled"]).run();
+  expect(disable.ui.setStatus.mock.calls).toEqual([
+    ["pi-subagent-model-router", "Router: enabled"],
+    ["pi-subagent-model-router", "Router: disabled"],
+  ]);
+  const enable = setup(["Router status", "Enabled"]);
+  await enable.run();
   expect(await stored()).toMatchObject({ enabled: true, routes: base.routes });
+  expect(enable.ui.setStatus).toHaveBeenLastCalledWith("pi-subagent-model-router", "Router: enabled");
 });
 
 test.each<[string[], string[]]>([
@@ -134,7 +141,7 @@ test("does not save if confirmation is declined or validation fails", async () =
 
 test("does not replace an external edit and cleans its temporary files", async () => {
   const { run, ui } = setup([route, "Label"], ["Edited in Pi"]);
-  const external = original + "\n";
+  const external = `${original}\n`;
   ui.confirm.mockImplementation(async () => { await writeFile(path, external); return true; });
   await run();
   expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("changed while the menu was open"), "error");
