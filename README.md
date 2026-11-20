@@ -4,11 +4,21 @@ When routing is enabled, give Pi a normal text prompt. The base model plans acti
 
 ## Setup
 
-Use Pi 1.5.2 and `pi-subagents` 0.89.1. From this checkout:
+Use Pi 1.5.2 and `pi-subagents` 0.89.1. Install the extension from npm:
 
 ```sh
-# Skip if this version of pi-subagents is already loaded in Pi.
+pi install npm:pi-subagent-model-router@0.1.0
+```
+
+The router requires `pi-subagents` 0.89.1. If it is not already loaded in Pi, install it first:
+
+```sh
 pi install npm:pi-subagents@0.89.1
+```
+
+To run from this checkout instead:
+
+```sh
 mkdir -p .pi/agents
 cp examples/router-spike-worker.md .pi/agents/
 pi -e ./src/index.ts
@@ -43,6 +53,8 @@ Supported thinking settings are `off`, `minimal`, `low`, `medium`, `high`, `xhig
 
 The classifier receives the brief, route names, labels, and criteria—not worker model settings. It answers whether any criterion fits and, for multiple routes, which fits best. A fit below 0.7 or an unavailable selected worker goes straight to the base model; the router doesn't retry a valid abstention with another provider. Missing credentials, request failures, or invalid responses try the next backend. Pi shows the first base fallback warning of each session and labels every base fallback result. Each attempted routing backend has a 10-second deadline. The chosen worker also receives the brief. Use non-sensitive sample data for tests.
 
+The router does not impose a 90-second cutoff on workers. It waits for the `pi-subagents` result unless the tool call is cancelled or the Pi session shuts down. `pi-subagents` 0.89.1 has no unlimited foreground timeout, so the router requests its maximum (about 24.8 days). If the extension is not loaded, no worker response arrives; cancel the wait and check the setup above.
+
 ## Validate software-engineering routes
 
 [`router.json`](router.json) includes three implementation tiers: Luna 6 (`low`) for localized edits, Sol 6.2 (`medium`) for multi-module work within one repo, and Sol 6.2 (`high`) for inherently complex changes that need product context across repos. Routine CLI and Git work uses Luna 6 (`low`); architecture discussions use Opus 5.5 (`medium`), LaTeX work uses Opus 5.5 (`medium`), and high-risk architecture or refactor planning uses Opus 5.5 (`high`).
@@ -71,7 +83,11 @@ Submit one of the examples below as a normal Pi prompt. Alternatively, use `/sub
 
 Open `/subagent-router` → **Session history** to see router requests on the active session branch, including the route, classifier, run ID when available, outcome, and requested versus effective model and thinking. A `submitted` or `unconfirmed` entry is not proof the worker ran. Receipts are stored in the Pi session and survive reload/resume for saved sessions. They do not include the brief or worker output and are not sent to the model.
 
-History includes earlier runs that already have saved router receipts; it cannot reconstruct runs made before receipts were recorded. For ordinary `pi-subagents` calls outside the router, inspect the original tool result or completion card, or use `/subagent-cost` for the native accounting view.
+History includes earlier runs with saved router receipts, but it cannot reconstruct missing receipts. It also counts router requests with attributable usage observations across all branches of the current Pi session. Each active-branch row can show the terminal response's reported input, output, cache-read and cache-write tokens and USD cost. These are observations, not verified totals or invoice amounts. `?` and `unknown` include zero-valued fields because the dependency can substitute zeros for missing data. Unidentified sessions, records inherited from a fork, older receipts without a session identity, missing or malformed reports, and ambiguous duplicate identities do not contribute observations. A count of zero means no eligible observations, not zero spend.
+
+**All-subagent totals and savings are not available with `pi-subagents` 0.89.1.** The structured delegation response covers only requests sent through that bridge. Its optional aggregate can lose missing-field information and does not include per-attempt model/pricing or prove all usage was captured. Pi exposes the session tree and stored messages, but not a complete inventory of child launches and their priced usage. The native `/subagent-cost` command (also available via the subagent RPC `cost` method) is a best-effort branch report: it reads tool results, completion records and optional artifacts, can fill missing fields with zeros, and does not report per-model rates or prove coverage of every launch. Use it, an original tool result, or a completion card to inspect ordinary `pi-subagents` runs outside the router; the router does not merge those results.
+
+A savings estimate would need complete usage and pricing for each used model: price the **same whole-session child token mix** at each used model’s rates, select the largest estimate, then subtract actual child spend. Only eligible sessions could contribute to cumulative and average savings. The router does not calculate any of these figures or substitute current registry rates for missing historical prices.
 
 ## Development
 

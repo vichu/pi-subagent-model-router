@@ -10,6 +10,7 @@ vi.mock("node:fs/promises", () => ({ readFile: vi.fn() }));
 
 const requestEvent = "prompt-template:subagent:request";
 const responseEvent = "prompt-template:subagent:response";
+const updateEvent = "prompt-template:subagent:update";
 const cancelEvent = "prompt-template:subagent:cancel";
 const args = "Summarize this\nbrief.";
 const routes = [
@@ -32,7 +33,8 @@ function setup() {
   const setModel = vi.fn().mockResolvedValue(true);
   const setThinkingLevel = vi.fn();
   const entries: unknown[] = [{ type: "message" }, { type: "custom", customType: "other" }, { type: "custom", customType: runEntryType }];
-  const appendEntry = vi.fn((customType, data) => entries.push({ type: "custom", customType, data }));
+  const appendEntry = vi.fn((customType, data) => entries.push({ id: String(entries.length), type: "custom", customType, data }));
+  const getHeader = vi.fn<() => { id: string; timestamp: string } | null>().mockReturnValue({ id: "demo-session", timestamp: "2026-01-01T00:00:00Z" });
   registerRouter({ on, registerCommand, registerTool, appendEntry, setModel, setThinkingLevel, getActiveTools: () => ["read", "bash"], setActiveTools, getThinkingLevel: () => "off", events: {
     emit: bus.emit.bind(bus),
     on: (event: string, listener: (data: unknown) => void) => {
@@ -43,7 +45,7 @@ function setup() {
   const handler = registerCommand.mock.calls[0][1].handler as (input: string, ctx: ExtensionCommandContext) => Promise<void>;
   const select = vi.fn<(title: string, options: string[]) => Promise<string | undefined>>().mockResolvedValue(undefined);
   const editor = vi.fn<(title: string) => Promise<string | undefined>>();
-  const ctx = { cwd: "/demo", hasUI: true, mode: "rpc", ui: { notify, select, editor, setStatus }, sessionManager: { getBranch: () => entries }, modelRegistry: { getAvailableOfType, classify, find: vi.fn().mockReturnValue({}), hasConfiguredAuth: () => true } } as unknown as ExtensionCommandContext;
+  const ctx = { cwd: "/demo", hasUI: true, mode: "rpc", ui: { notify, select, editor, setStatus }, sessionManager: { getHeader, getEntries: () => entries, getBranch: () => entries }, modelRegistry: { getAvailableOfType, classify, find: vi.fn().mockReturnValue({}), hasConfiguredAuth: () => true } } as unknown as ExtensionCommandContext;
   const open = (overrides: Partial<ExtensionCommandContext> = {}) => handler("", { ...ctx, ...overrides });
   const history = async () => {
     select.mockResolvedValueOnce("Session history");
@@ -64,7 +66,7 @@ function setup() {
   const settle = () => on.mock.calls.find(([event]) => event === "agent_settled")![1]();
   const tool = registerTool.mock.calls[0][0];
   const delegate = (tasks: Array<{ brief: string; access: "text" | "workspace" }>, signal?: AbortSignal, update?: ReturnType<typeof vi.fn>) => tool.execute("call", { tasks }, signal, update, ctx);
-  return { bus, notify, setStatus, start, before, settle, delegate, setActiveTools, setModel, setThinkingLevel, appendEntry, getAvailableOfType, classify, registerCommand, select, open, history, run, shutdown: () => on.mock.calls[0][1]() };
+  return { bus, getHeader, notify, setStatus, start, before, settle, delegate, setActiveTools, setModel, setThinkingLevel, appendEntry, getAvailableOfType, classify, registerCommand, select, open, history, run, shutdown: () => on.mock.calls[0][1]() };
 }
 
 test.each([
@@ -78,6 +80,7 @@ test.each([
       state: { task: args, routes: { writing: "Writing: Draft prose", analysis: "Analysis: Analyze a topic" } },
     }), { signal: expect.any(AbortSignal) });
     expect(req).toMatchObject({ model, thinking, cwd: "/demo", context: "fresh", agent: "router-spike-worker", toolBudget: { hard: 0, block: "*" } });
+    bus.emit(responseEvent, undefined);
     for (const key of ["requestId", "ownerRunId", "nodeId"]) bus.emit(responseEvent, { ...req, [key]: "other" });
     bus.emit(responseEvent, { ...req, status: "completed", result: { kind: "text", text: "done" } });
   });
@@ -139,19 +142,60 @@ test("can use the current model if Pi cannot set the configured base model", asy
   expect(setThinkingLevel).not.toHaveBeenCalled();
 });
 
-test("routes a workspace task to the worker and returns its output to the base model", async () => {
+test("keeps a workspace worker running past the old cutoff and cleans up after completion", async () => {
   const { before, delegate, bus } = setup();
+  const controller = new AbortController();
   const update = vi.fn();
+  const cancel = vi.fn();
   await before();
-  bus.on(requestEvent, (req: SubagentDelegationRequest) => {
-    expect(req).toMatchObject({ agent: "worker", model: "demo/writer" });
-    expect(req.toolBudget).toBeUndefined();
-    bus.emit(responseEvent, { ...req, status: "completed", result: { kind: "text", text: "workspace findings" } });
+  vi.useFakeTimers();
+  const timeout = vi.spyOn(AbortSignal, "timeout");
+  try {
+    bus.on(cancelEvent, cancel);
+    bus.on(requestEvent, (req: SubagentDelegationRequest) => {
+      expect(req).toMatchObject({ agent: "worker", model: "demo/writer", timeoutMs: 2_147_483_647 });
+      expect(req.toolBudget).toBeUndefined();
+      bus.emit(updateEvent, undefined);
+      bus.emit(updateEvent, { ...req, nodeId: "other" });
+      bus.emit(updateEvent, { ...req, currentTool: "read" });
+      bus.emit(updateEvent, req);
+      setTimeout(() => bus.emit(responseEvent, { ...req, status: "completed", result: { kind: "text", text: "workspace findings" } }), 120_000);
+    });
+    const pending = delegate([{ brief: "Inspect the file", access: "workspace" }], controller.signal, update);
+    await vi.advanceTimersByTimeAsync(120_000);
+    const result = await pending;
+    expect(timeout.mock.calls).toEqual([[10_000]]); // Only classification has a router deadline.
+    expect(result.content[0].text).toContain("workspace findings");
+    expect(result.isError).toBe(false);
+    expect(update.mock.calls.map(([data]) => data.content[0].text)).toEqual([
+      "Task 1: classifying", "Task 1: writing → demo/writer (off)", "Task 1: child running read", "Task 1: child reported progress",
+    ]);
+    expect(bus.listenerCount(responseEvent)).toBe(0);
+    expect(bus.listenerCount(updateEvent)).toBe(0);
+    controller.abort();
+    expect(cancel).not.toHaveBeenCalled();
+  } finally {
+    timeout.mockRestore();
+    vi.useRealTimers();
+  }
+});
+
+test("cancels an active worker when the tool call is aborted and removes its listeners", async () => {
+  const { before, delegate, bus } = setup();
+  const controller = new AbortController();
+  const cancel = vi.fn();
+  await before();
+  bus.on(cancelEvent, cancel);
+  bus.on(requestEvent, ({ requestId, ownerRunId, nodeId }) => {
+    expect(bus.listenerCount(updateEvent)).toBe(1);
+    controller.abort();
+    expect(cancel).toHaveBeenCalledExactlyOnceWith({ requestId, ownerRunId, nodeId });
   });
-  const result = await delegate([{ brief: "Inspect the file", access: "workspace" }], new AbortController().signal, update);
-  expect(result.content[0].text).toContain("workspace findings");
-  expect(result.isError).toBe(false);
-  expect(update.mock.calls.map(([data]) => data.content[0].text)).toEqual(["Task 1: classifying", "Task 1: writing → demo/writer (off)"]);
+  const result = await delegate([{ brief: "Draft a note", access: "text" }], controller.signal, vi.fn());
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain("Child cancelled.");
+  expect(bus.listenerCount(responseEvent)).toBe(0);
+  expect(bus.listenerCount(updateEvent)).toBe(0);
 });
 
 test("allows parallel text children, preserves partial results, and rejects batches with workspace work", async () => {
@@ -243,10 +287,37 @@ test("disabling blocks all routing work and re-enabling works in the same sessio
 test("shows one persisted row per request, including reported effective settings", async () => {
   const { bus, run, history, appendEntry } = setup();
   expect(await history()).toContain("No router runs");
-  bus.on(requestEvent, (req) => bus.emit(responseEvent, { ...req, status: "completed", runId: "worker-123", model: "demo/real", thinking: "low", result: { kind: "text", text: "private output" } }));
+  bus.on(requestEvent, (req) => bus.emit(responseEvent, {
+    ...req, status: "completed", runId: "worker-123", model: "demo/real", thinking: "low",
+    result: { kind: "text", text: "private output" }, usage: { input: 10, output: 12, cacheRead: 0, cacheWrite: 2, cost: 0.003, turns: 1 },
+  }));
   await run();
-  expect(await history()).toBe("Subagent router · session history\nwriting · completed · router-spike-worker\nRequested: demo/writer (off)\nEffective: demo/real (low)\nClassifier: typesafe/jev-latest\nRun: worker-123");
-  expect(JSON.stringify(appendEntry.mock.calls)).not.toMatch(/Summarize this|private output/);
+  const report = await history();
+  expect(report).toContain("Router requests with usage observations (whole session): 1");
+  expect(report).toContain("Totals and savings unavailable");
+  expect(report).toContain("writing · completed · router-spike-worker\nRequested: demo/writer (off)\nEffective: demo/real (low)\nClassifier: typesafe/jev-latest\nRun: worker-123\nReported: 10 in / 12 out / ? cache read / 2 cache write\nReported cost (USD): $0.003");
+  expect(JSON.stringify(appendEntry.mock.calls)).not.toMatch(/Summarize this|private output|turns/);
+});
+
+test("does not record usage for an unidentified session", async () => {
+  const { bus, getHeader, run, history, appendEntry } = setup();
+  getHeader.mockReturnValue(null);
+  bus.on(requestEvent, (req) => bus.emit(responseEvent, {
+    ...req, status: "failed", runId: "worker-123", usage: { input: 10, output: 12, cacheRead: 0, cacheWrite: 2, cost: 0.003 },
+  }));
+  await run();
+  expect(appendEntry.mock.lastCall?.[1].usage).toBeUndefined();
+  expect(await history()).toContain("Router usage observations unavailable: unidentified Pi session.");
+});
+
+test("does not put a terminal receipt into a different session", async () => {
+  const { bus, getHeader, run, appendEntry } = setup();
+  bus.on(requestEvent, (req) => {
+    getHeader.mockReturnValue({ id: "new-session", timestamp: "2026-01-01T00:00:00Z" });
+    bus.emit(responseEvent, { ...req, status: "failed" });
+  });
+  await run();
+  expect(appendEntry).toHaveBeenCalledExactlyOnceWith(runEntryType, expect.objectContaining({ status: "submitted" }));
 });
 
 test("keeps rejected requests distinct from confirmed launches", async () => {

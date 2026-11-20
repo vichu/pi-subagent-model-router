@@ -4,13 +4,14 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import type {
   SubagentDelegationRequest,
   SubagentDelegationResponse,
+  SubagentDelegationUpdate,
 } from "pi-subagents/delegation";
 import { Type } from "typebox";
 
 import { showConfigMenu } from "./config-menu.ts";
 import { pickConfigItem } from "./config-picker.ts";
 import { type ModelChoice, type RouterConfig, parseConfig, routerCommand, splitModel } from "./config.ts";
-import { showHistory, type RunReceipt, runEntryType } from "./history.ts";
+import { reportedRunUsage, type RunReceipt, runEntryType, runSessionKey, showHistory } from "./history.ts";
 import { setRouterStatus } from "./router-status.ts";
 import { determineRoute } from "./router.ts";
 
@@ -18,11 +19,14 @@ import { determineRoute } from "./router.ts";
 // not instantiated or resolved at runtime from this package's module root.
 const delegation = {
   request: "prompt-template:subagent:request",
+  update: "prompt-template:subagent:update",
   response: "prompt-template:subagent:response",
   cancel: "prompt-template:subagent:cancel",
 } as const;
 
-const childTimeoutMs = 90_000;
+// Omission uses pi-subagents' foreground default. Use its largest supported
+// timer instead, and let the caller's abort signal govern the router's wait.
+const maxDelegationTimeoutMs = 2_147_483_647;
 const configFile = new URL("../router.json", import.meta.url);
 const toolName = "subagent_router_delegate";
 const orchestration = "You are the base model coordinating user tasks. For actionable work, call subagent_router_delegate before presenting a result; do not do the work yourself. Keep simple clarification and conversational replies local. Use one child for a single task. Batch only independent text-only tasks, and run tasks that need workspace files, commands or edits one at a time. For dependent work, wait for the prerequisite result, then brief the next child with the relevant findings. Stay within the user's scope. Synthesize the results and disclose failures.";
@@ -31,24 +35,34 @@ function launch(
   events: ExtensionAPI["events"],
   request: SubagentDelegationRequest,
   signal: AbortSignal,
+  onProgress?: (update: SubagentDelegationUpdate) => void,
 ): Promise<SubagentDelegationResponse> {
   const { requestId, ownerRunId, nodeId } = request;
+  function matches(payload: SubagentDelegationResponse | SubagentDelegationUpdate) {
+    return payload.requestId === requestId && payload.ownerRunId === ownerRunId && payload.nodeId === nodeId;
+  }
   return new Promise((resolve, reject) => {
-    const off = events.on(delegation.response, (payload) => {
-      const response = payload as SubagentDelegationResponse;
-      if (response.requestId === requestId && response.ownerRunId === ownerRunId && response.nodeId === nodeId) {
+    signal.throwIfAborted();
+    const offResponse = events.on(delegation.response, (payload) => {
+      const response = payload as SubagentDelegationResponse | undefined;
+      if (response && matches(response)) {
         cleanup();
         resolve(response);
       }
     });
+    const offUpdate = onProgress && events.on(delegation.update, (payload) => {
+      const update = payload as SubagentDelegationUpdate | undefined;
+      if (update && matches(update)) onProgress(update);
+    });
     function cleanup() {
-      off();
+      offResponse();
+      offUpdate?.();
       signal.removeEventListener("abort", abort);
     }
     function abort() {
       cleanup();
       events.emit(delegation.cancel, { requestId, ownerRunId, nodeId });
-      reject(new Error("Child cancelled or no response from pi-subagents before the deadline."));
+      reject(new Error("Child cancelled."));
     }
     signal.addEventListener("abort", abort, { once: true });
     events.emit(delegation.request, request);
@@ -68,26 +82,29 @@ export default function router(pi: ExtensionAPI) {
     }
   });
 
-  async function runChild(ctx: ExtensionContext, task: string, route: string, requested: ModelChoice, backend: string | null, workspace: boolean, cancellation: AbortSignal) {
-    const signal = AbortSignal.any([cancellation, AbortSignal.timeout(childTimeoutMs + 5_000)]);
+  async function runChild(ctx: ExtensionContext, task: string, route: string, requested: ModelChoice, backend: string | null, workspace: boolean, signal: AbortSignal, onProgress?: (update: SubagentDelegationUpdate) => void) {
     signal.throwIfAborted();
     const { model, thinking } = requested;
     const requestId = randomUUID();
     const agent = workspace ? "worker" : "router-spike-worker";
-    const receipt: RunReceipt = { requestId, agent, route, backend, requested, status: "submitted" };
+    const sessionKey = runSessionKey(ctx.sessionManager);
+    const receipt: RunReceipt = { requestId, sessionKey, agent, route, backend, requested, status: "submitted" };
     pi.appendEntry(runEntryType, receipt);
     const response = await launch(pi.events, {
       requestId, ownerRunId: randomUUID(), nodeId: "router",
       agent, task, context: "fresh", cwd: ctx.cwd, model, thinking,
-      timeoutMs: childTimeoutMs,
+      timeoutMs: maxDelegationTimeoutMs,
       ...(workspace ? {} : { toolBudget: { hard: 0, block: "*" as const } }),
       intercomBridge: { mode: "off" },
       result: { kind: "text" },
-    }, signal);
+    }, signal, onProgress);
     const effective = response.status === "invalid_request" ? {} : {
       runId: response.runId, model: response.model, thinking: response.thinking,
+      usage: sessionKey && response.runId ? reportedRunUsage(response.usage) : undefined,
     };
-    pi.appendEntry<RunReceipt>(runEntryType, { ...receipt, ...effective, status: response.status });
+    if (sessionKey === runSessionKey(ctx.sessionManager)) {
+      pi.appendEntry<RunReceipt>(runEntryType, { ...receipt, ...effective, status: response.status });
+    }
     if (response.status !== "completed" || response.result?.kind !== "text") {
       throw new Error(`Child did not return text successfully (${response.status}).${response.error ? ` ${response.error}` : ""}`);
     }
@@ -155,7 +172,10 @@ export default function router(pi: ExtensionAPI) {
         const decision = await choose(ctx, brief, config, signal);
         const route = decision.route ?? "base fallback";
         onUpdate?.({ content: [{ type: "text", text: `Task ${index + 1}: ${route} → ${decision.target.model} (${decision.target.thinking})` }], details: {} });
-        return runChild(ctx, brief, route, decision.target, decision.backend, access === "workspace", signal);
+        return runChild(ctx, brief, route, decision.target, decision.backend, access === "workspace", signal, onUpdate && ((progress) => {
+          const activity = progress.currentTool ? `child running ${progress.currentTool}` : "child reported progress";
+          onUpdate({ content: [{ type: "text", text: `Task ${index + 1}: ${activity}` }], details: {} });
+        }));
       }));
       return {
         content: [{ type: "text", text: results.map((result, index) => `Task ${index + 1}: ${result.status === "fulfilled" ? result.value : `Failed: ${String(result.reason)}`}`).join("\n\n") }],

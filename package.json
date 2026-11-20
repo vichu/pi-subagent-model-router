@@ -1,8 +1,8 @@
 {
   "name": "pi-subagent-model-router",
-  "version": "0.0.0",
-  "private": true,
-  "description": "Config-driven model routing for Pi subagents (integration spike)",
+  "version": "0.1.0",
+  "repository": "git+https://github.com/vichu/pi-subagent-model-router.git",
+  "description": "Config-driven model routing for Pi subagents",
   "type": "module",
   "license": "MIT",
   "keywords": ["pi-package", "pi", "subagents"],

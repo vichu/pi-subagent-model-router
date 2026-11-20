@@ -2,7 +2,7 @@ import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { fuzzyFilter, Input, replaceControlCharacters, SelectList, type SelectItem, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 export type PickerItem = SelectItem & { preview?: string };
-type PickerOptions = { search?: boolean; current?: string; hint?: string };
+type PickerOptions = { search?: boolean; current?: string; hint?: string; previewLines?: number };
 
 type PickerContext = Pick<ExtensionCommandContext, "mode" | "ui">;
 
@@ -36,14 +36,14 @@ export function pickConfigItem(ctx: PickerContext, title: string, items: PickerI
         const inner = Math.max(1, width - 2);
         const rule = () => accent("─".repeat(inner));
         const lines = [rule(), `  ${accent(theme.bold(title))}`];
-        if (options.hint) lines.push(`  ${muted(options.hint)}`);
+        if (options.hint) lines.push(...options.hint.split("\n").map((line) => `  ${muted(line)}`));
         if (options.search) lines.push("", ...input.render(inner));
         lines.push("", ...list.render(inner));
         const selected = list.getSelectedItem();
         const preview = selected && byValue.get(selected.value)?.preview;
         if (preview) {
           const wrapped = preview.split("\n").flatMap((line) => wrapTextWithAnsi(replaceControlCharacters(line), Math.max(1, inner - 4)));
-          lines.push("", ...wrapped.slice(0, 4).map((line) => `  ${muted(line)}`));
+          lines.push("", ...wrapped.slice(0, options.previewLines ?? 4).map((line) => `  ${muted(line)}`));
         }
         lines.push("", `  ${muted("↑↓ Browse   Enter Select   Esc Back")}`, rule());
         return lines.map((line) => truncateToWidth(line, width));
