@@ -39,10 +39,13 @@ The classifier receives the brief, route names, labels, and criteria—not worke
 
 ## Validate software-engineering routes
 
-[`router.json`](router.json) starts with eleven engineering task categories, including three implementation tiers: Luna 6 (`low`) for localized edits, Sol 6.2 (`medium`) for multi-module work within one repo, and Sol 6.2 (`high`) for inherently complex changes that need product context across repos. After setup (or `/reload` if already linked), run `/router-run <brief>` with a brief below. These are text-only checks: the worker can discuss the brief or return a sketch, but cannot inspect or edit files.
+[`router.json`](router.json) includes three implementation tiers: Luna 6 (`low`) for localized edits, Sol 6.2 (`medium`) for multi-module work within one repo, and Sol 6.2 (`high`) for inherently complex changes that need product context across repos. Routine CLI and Git work uses Luna 6 (`low`); architecture discussions use Opus 5.5 (`medium`), LaTeX work uses Opus 5.5 (`medium`), and high-risk architecture or refactor planning uses Opus 5.5 (`high`).
+
+Try `/router-run <brief>` with a brief below. These are routing checks: the current worker can discuss the brief or return a sketch, but cannot execute commands or inspect or edit files. Normal Pi tool calls are not intercepted.
 
 | Sample brief | Expected route |
 | --- | --- |
+| Run `git status --short` and report the changed paths. | `simple_cli_operations` |
 | Explain how a request moves from the HTTP controller through the service to the repository. No changes requested. | `codebase_orientation` |
 | Add an optional CSV separator parameter to one existing export helper; behavior is specified and callers don’t change. | `simple_coding` |
 | Implement CSV report export across the controller, permission checks, service, and storage layers in one application repo. | `standard_coding` |
@@ -52,7 +55,9 @@ The classifier receives the brief, route names, labels, and criteria—not worke
 | Review a proposed patch that replaces `Promise.allSettled` with `Promise.all`. Return findings only. | `code_review` |
 | Show how to extract duplicated normalization into a helper without changing behavior. | `refactoring` |
 | Compare a queue and a synchronous endpoint for thumbnail generation and recommend an architecture. | `architecture_design` |
+| Design a phased migration away from the shared billing database across three services, including compatibility, rollout, and rollback. Do not implement it. | `complex_architecture` |
 | Explain how to benchmark a JSON encoder that doubled p95 latency under load. | `performance_analysis` |
+| Fix a LaTeX table that overflows a two-column paper and explain the typesetting change. | `latex_authoring` |
 | Draft a runbook for onboarding developers to our local build and test workflow. | `engineering_documentation` |
 | Recommend a side dish for a picnic. | Base fallback: no rubric match |
 
