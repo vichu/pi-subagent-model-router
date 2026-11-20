@@ -1,9 +1,12 @@
 {
   "version": 1,
+  "enabled": true,
   "base_agent": { "model": "anthropic/claude-haiku-4-5", "thinking": "off" },
   "routes": [
     { "name": "codebase_orientation", "label": "Codebase orientation", "model": "anthropic/claude-haiku-4-5", "thinking": "off", "when_to_use": "The deliverable is a map or explanation of how existing code works, without diagnosing a failure or proposing a change." },
-    { "name": "feature_implementation", "label": "Feature implementation", "model": "anthropic/claude-sonnet-4-6", "thinking": "medium", "when_to_use": "The deliverable is code that adds or changes intended product behavior. It is not a repair for a behavior already expected to work." },
+    { "name": "simple_coding", "label": "Simple coding", "model": "openai-codex/gpt-6-luna", "thinking": "low", "when_to_use": "Implement a well-specified product change in one file or a small, self-contained module. The behavior and acceptance criteria are clear, and the change does not require tracing other components." },
+    { "name": "standard_coding", "label": "Standard coding · large codebase", "model": "openai-codex/gpt-6.2-sol", "thinking": "medium", "when_to_use": "Implement a product change whose impact spans multiple modules or layers of one repository. The work requires tracing existing interfaces and integration points, but the product behavior and repository boundary are established." },
+    { "name": "complex_coding", "label": "Complex coding · cross-product", "model": "openai-codex/gpt-6.2-sol", "thinking": "high", "when_to_use": "Implement an inherently complex change across multiple repositories that requires product-wide context. The work depends on coordinating behavior or compatibility across services, shared libraries, or clients. Multiple files in one repository alone do not qualify." },
     { "name": "bug_diagnosis", "label": "Bug diagnosis and repair", "model": "anthropic/claude-sonnet-4-6", "thinking": "high", "when_to_use": "The brief describes incorrect behavior and asks for a root cause or a targeted fix. Tests to verify that fix are secondary." },
     { "name": "test_authoring", "label": "Test authoring", "model": "anthropic/claude-sonnet-4-6", "thinking": "low", "when_to_use": "The primary deliverable is test cases, fixtures, or a coverage plan for an existing behavior, not a production-code fix." },
     { "name": "code_review", "label": "Code review", "model": "anthropic/claude-sonnet-4-6", "thinking": "high", "when_to_use": "The deliverable is findings on an existing patch or code snippet, with evidence and severity, rather than writing the patch." },

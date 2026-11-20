@@ -102,6 +102,10 @@ export default function router(pi: ExtensionAPI) {
       }
       try {
         const config = parseConfig(await readFile(configFile, { encoding: "utf8", signal: session.signal }));
+        if (!config.enabled) {
+          ctx.ui.notify("Subagent routing is disabled. Re-enable it in /subagent-router-config.", "info");
+          return;
+        }
         const current = ctx.model && { model: `${ctx.model.provider}/${ctx.model.id}`, thinking: pi.getThinkingLevel() };
         const decision = await determineRoute(config, task, ctx.modelRegistry, current, session.signal);
         if (decision.route || !warnedAboutBase) {

@@ -117,10 +117,17 @@ export async function showConfigMenu(ctx: ExtensionCommandContext, path: URL, si
       value: row.name, label: row.label, description: `${row.model} · ${row.thinking}`,
       preview: `${row.name} · ${row.model} (${row.thinking})\n\nWhen to use: ${row.when_to_use}`,
     }));
+    const status = config.enabled ? "Enabled" : "Disabled";
+    const switchItem = { value: "Router status", label: `Router status: ${status}`, preview: "Enable or disable routing without changing the rubric." };
     const actions = ["Add route", "Classifier order", "Base model", "Routing model"].map((value) => ({ value, label: value }));
-    const action = await pickConfigItem(ctx, "Subagent router · rubric", [...rows, ...actions], { hint: `${rows.length} routes · router.json · Select a route to edit` });
+    const action = await pickConfigItem(ctx, "Subagent router · rubric", [switchItem, ...rows, ...actions], { hint: `${status} · ${rows.length} routes · router.json` });
     if (action === undefined) return;
-    if (action === "Add route") {
+    if (action === "Router status") {
+      const choices = ["Enabled", "Disabled"].map((value) => ({ value, label: value }));
+      const next = await pickConfigItem(ctx, "Router status", choices, { current: status, hint: "Applies to new router runs" });
+      if (next !== "Enabled" && next !== "Disabled") return;
+      config.enabled = next === "Enabled";
+    } else if (action === "Add route") {
       const route = await addRoute(ctx);
       if (!route) return;
       config.routes.push(route);

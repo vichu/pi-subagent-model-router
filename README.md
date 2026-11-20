@@ -20,13 +20,14 @@ Trust this checkout when prompted so `pi-subagents` can discover the generic too
 
 Run `/subagent-router-config` in Pi to browse the rubric without editing JSON. The rubric, pickers, and edit controls open inline in the editor area at the bottom, not over the conversation. Use ↑/↓ to preview a route’s criteria, model, and thinking level; press Enter to edit and Esc to back out. In the model dropdown, type to filter Pi’s available chat models by name, provider, or ID. The thinking dropdown shows the levels supported by the selected model.
 
-The same menu can add or remove routes, reorder classifiers, and set or clear the base and routing models. Select **When to use** to view or edit the full criteria. Each change is validated and requires save confirmation.
+Use **Router status** to enable or disable routing. While disabled, `/router-run` does not call a classifier or start a worker. The config menu and history remain available. The same menu can add or remove routes, reorder classifiers, and set or clear the base and routing models. Select **When to use** to view or edit the full criteria. Each change is validated and requires save confirmation.
 
 The repo’s [`router.json`](router.json) remains the only routing config. `/router-run` reads it from the extension’s checkout on every invocation, regardless of Pi’s working directory. Saved edits apply to the next run without reloading and don’t change a worker already running. No config path or persona is selected at runtime. Use provider-qualified model IDs available in your Pi session. OpenAI’s Decisions API requires an API key; ChatGPT sign-in does not support it.
 
 | Field | Meaning |
 | --- | --- |
 | `version` | Required; `1`. |
+| `enabled` | Optional boolean; defaults to `true`. Set to `false` to stop new router runs without unloading the extension or interrupting existing workers. |
 | `routes` | 1–32 rows. Each has a unique lowercase `name` (letters, digits, underscores; start with a letter), a human-readable `label`, `when_to_use` criteria, a provider-qualified `model`, and `thinking`. |
 | `classifiers` | Optional ordered list of up to four classifier IDs; defaults to `typesafe/jev-latest`, then `openai/gpt-6-luna`. `[]` skips these services. |
 | `routing_model` | Optional chat `{ "model": "provider/id", "thinking": "low" }` tried if no classifier can return a valid answer. |
@@ -38,12 +39,14 @@ The classifier receives the brief, route names, labels, and criteria—not worke
 
 ## Validate software-engineering routes
 
-[`router.json`](router.json) starts with nine engineering task categories. After setup (or `/reload` if already linked), run `/router-run <brief>` with a brief below. These are text-only checks: the worker can discuss the brief or return a sketch, but cannot inspect or edit files.
+[`router.json`](router.json) starts with eleven engineering task categories, including three implementation tiers: Luna 6 (`low`) for localized edits, Sol 6.2 (`medium`) for multi-module work within one repo, and Sol 6.2 (`high`) for inherently complex changes that need product context across repos. After setup (or `/reload` if already linked), run `/router-run <brief>` with a brief below. These are text-only checks: the worker can discuss the brief or return a sketch, but cannot inspect or edit files.
 
 | Sample brief | Expected route |
 | --- | --- |
 | Explain how a request moves from the HTTP controller through the service to the repository. No changes requested. | `codebase_orientation` |
-| Sketch the Go code to add a CSV export option to an existing report endpoint. | `feature_implementation` |
+| Add an optional CSV separator parameter to one existing export helper; behavior is specified and callers don’t change. | `simple_coding` |
+| Implement CSV report export across the controller, permission checks, service, and storage layers in one application repo. | `standard_coding` |
+| Implement a backwards-compatible billing change spanning the billing service, shared SDK, and web client repos, with coordinated rollout semantics. | `complex_coding` |
 | Explain why a UTC date displays as the previous day for users west of Greenwich and suggest a targeted fix. | `bug_diagnosis` |
 | Write table-driven tests covering empty input, duplicates, and Unicode for an existing slug parser. | `test_authoring` |
 | Review a proposed patch that replaces `Promise.allSettled` with `Promise.all`. Return findings only. | `code_review` |

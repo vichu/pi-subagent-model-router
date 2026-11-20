@@ -100,8 +100,17 @@ test("changes classifier priority and supports disabling classifiers", async () 
   expect((await stored()).classifiers).toEqual([]);
 });
 
+test("toggles routing through the config menu without changing routes", async () => {
+  const disable = setup(["Router status", "Disabled"]);
+  await disable.run();
+  expect(disable.ui.select).toHaveBeenCalledWith("Router status", ["Enabled", "Disabled"]);
+  expect(await stored()).toMatchObject({ enabled: false, routes: base.routes });
+  await setup(["Router status", "Enabled"]).run();
+  expect(await stored()).toMatchObject({ enabled: true, routes: base.routes });
+});
+
 test.each<[string[], string[]]>([
-  [[], []], [["unknown route"], []], [[route], []], [[route, "Label"], []], [[route, "Thinking"], []], [[route, "Model"], []],
+  [[], []], [["Router status"], []], [["Router status", "unknown"], []], [["unknown route"], []], [[route], []], [[route, "Label"], []], [[route, "Thinking"], []], [[route, "Model"], []],
   [["Classifier order"], []], [["Base model"], []], [["Routing model", "Set model and thinking"], []],
   [["Routing model", "Set model and thinking", "demo/new"], []],
   [["Add route"], []], [["Add route"], ["key"]], [["Add route"], ["key", "Label"]],

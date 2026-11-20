@@ -77,6 +77,22 @@ test("applies updated rubric criteria and launch settings on the next run in the
   expect(classify.mock.calls[1][1].questions.route.criteria.writing).toBe("Writing: Draft short notes");
 });
 
+test("disabling blocks all routing work and re-enabling works in the same session", async () => {
+  const { bus, classify, getAvailableOfType, notify, run, appendEntry } = setup();
+  const request = vi.fn((req: SubagentDelegationRequest) => bus.emit(responseEvent, { ...req, status: "completed", result: { kind: "text", text: "done" } }));
+  bus.on(requestEvent, request);
+  vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes, enabled: false }));
+  await run();
+  expect(notify).toHaveBeenCalledWith(expect.stringContaining("routing is disabled"), "info");
+  expect(getAvailableOfType).not.toHaveBeenCalled();
+  expect(classify).not.toHaveBeenCalled();
+  expect(request).not.toHaveBeenCalled();
+  expect(appendEntry).not.toHaveBeenCalled();
+  vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes, enabled: true }));
+  await run();
+  expect(request).toHaveBeenCalledTimes(1);
+});
+
 test("shows one persisted row per request, including reported effective settings", async () => {
   const { bus, notify, run, history, appendEntry } = setup();
   await history();

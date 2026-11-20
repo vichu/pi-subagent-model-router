@@ -6,7 +6,12 @@ const base = { version: 1, routes: [route] };
 const parse = (value: unknown) => parseConfig(JSON.stringify(value));
 
 test("defaults to Jev, then Decisions API", () => {
-  expect(parse(base)).toEqual({ routes: [route], classifiers: ["typesafe/jev-latest", "openai/gpt-6-luna"] });
+  expect(parse(base)).toEqual({ enabled: true, routes: [route], classifiers: ["typesafe/jev-latest", "openai/gpt-6-luna"] });
+});
+
+test("accepts an explicit enable or disable setting", () => {
+  expect(parse({ ...base, enabled: true }).enabled).toBe(true);
+  expect(parse({ ...base, enabled: false }).enabled).toBe(false);
 });
 
 test("reads explicit backend overrides and model settings", () => {
@@ -15,6 +20,7 @@ test("reads explicit backend overrides and model settings", () => {
 });
 
 test.each([
+  [{ ...base, enabled: "false" }, "enabled"], [{ ...base, enabled: null }, "enabled"],
   [null, "object"], ["root", "object"], [[], "object"], [{ ...base, version: 0 }, "version"],
   [{ ...base, routes: null }, "routes"], [{ ...base, routes: [] }, "routes"], [{ ...base, routes: Array(33).fill(route) }, "routes"],
   [{ ...base, routes: [route, route] }, "unique"], [{ ...base, routes: [{ ...route, name: "Bad Name" }] }, "unique"],

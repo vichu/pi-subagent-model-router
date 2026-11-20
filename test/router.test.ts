@@ -6,7 +6,7 @@ import { determineRoute } from "../src/router.ts";
 const writer = { name: "writer", label: "Writer", when_to_use: "Draft prose", model: "p/writer", thinking: "high" } as const;
 const analyst = { ...writer, name: "analyst", when_to_use: "Analyze a topic", model: "p/analyst" };
 const base = { model: "p/base", thinking: "off" } as const;
-const config: RouterConfig = { routes: [writer, analyst], classifiers: ["p/jev", "q/decisions"] };
+const config: RouterConfig = { enabled: true, routes: [writer, analyst], classifiers: ["p/jev", "q/decisions"] };
 const classifierResult = (probability = 0.9, route: unknown = { type: "choice", choice: "writer" }) => ({ stopReason: "stop", answers: { fits: { type: "bool", probability }, route } });
 
 function setup() {
