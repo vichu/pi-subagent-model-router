@@ -54,7 +54,7 @@ export default function router(pi: ExtensionAPI) {
   const session = new AbortController();
   pi.on("session_shutdown", () => { session.abort(); });
 
-  pi.registerCommand("router-config", {
+  pi.registerCommand("subagent-router-config", {
     description: "Edit router.json with interactive menus",
     handler: async (_args, ctx) => showConfigMenu(ctx, configFile, session.signal),
   });

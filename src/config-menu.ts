@@ -1,53 +1,80 @@
 import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { type ModelChoice, parseConfig, type Route, thinkingLevels } from "./config.ts";
+import { pickConfigItem } from "./config-picker.ts";
+import { type ModelChoice, parseConfig, type Route, splitModel } from "./config.ts";
 
-type UI = ExtensionCommandContext["ui"];
+const configCommand = "/subagent-router-config";
 
-async function pickThinking(ui: UI, current: ModelChoice["thinking"]) {
-  const picked = await ui.select(`Thinking level (current: ${current})`, [current, ...thinkingLevels.filter((level) => level !== current)]);
-  return picked as ModelChoice["thinking"] | undefined;
+async function pickThinking(ctx: ExtensionCommandContext, modelId: string, current: ModelChoice["thinking"]) {
+  const model = ctx.modelRegistry.find(...splitModel(modelId));
+  if (!model) {
+    ctx.ui.notify(`Model ${modelId} is not in Pi’s catalog. Pick an available model first.`, "warning");
+    return;
+  }
+  const levels = getSupportedThinkingLevels(model);
+  const picked = await pickConfigItem(ctx, "Thinking level", levels.map((value) => ({ value, label: value })), { current, hint: modelId });
+  return levels.find((level) => level === picked);
 }
 
-async function editModel(ui: UI, current: ModelChoice): Promise<ModelChoice | undefined> {
-  const model = await ui.editor("Model ID (provider/id)", current.model);
+async function editModel(ctx: ExtensionCommandContext, current: ModelChoice): Promise<ModelChoice | undefined> {
+  const items = ctx.modelRegistry.getAvailable().map(({ provider, id, name }) => {
+    const value = `${provider}/${id}`;
+    return { value, label: name, description: value, preview: value };
+  }).sort((a, b) => a.value.localeCompare(b.value));
+  if (!items.length) {
+    ctx.ui.notify("No chat models available. Configure a provider in Pi first.", "warning");
+    return;
+  }
+  const model = await pickConfigItem(ctx, "Available models", items, { search: true, current: current.model, hint: "Type to filter Pi’s available chat models" });
   if (model === undefined) return;
-  const thinking = await pickThinking(ui, current.thinking);
+  const thinking = await pickThinking(ctx, model, current.thinking);
   if (thinking === undefined) return;
   return { model, thinking };
 }
 
-async function addRoute(ui: UI): Promise<Route | undefined> {
+async function addRoute(ctx: ExtensionCommandContext): Promise<Route | undefined> {
+  const { ui } = ctx;
   const name = await ui.editor("Route key (lowercase snake_case)", "");
   if (name === undefined) return;
   const label = await ui.editor("Display label", "");
   if (label === undefined) return;
   const when_to_use = await ui.editor("When should the classifier choose this route?", "");
   if (when_to_use === undefined) return;
-  const choice = await editModel(ui, { model: "", thinking: "off" });
+  const choice = await editModel(ctx, { model: "", thinking: "off" });
   if (!choice) return;
   return { name, label, when_to_use, ...choice };
 }
 
-async function editRoute(ui: UI, route: Route): Promise<Route | "remove" | undefined> {
-  const field = await ui.select(`${route.label} · ${route.model} (${route.thinking})`, [
-    "Name", "Label", "When to use", "Model", "Thinking", "Remove route",
-  ]);
+async function editRoute(ctx: ExtensionCommandContext, route: Route): Promise<Route | "remove" | undefined> {
+  const { ui } = ctx;
+  const fields = [
+    { value: "Name", description: route.name },
+    { value: "Label", description: route.label },
+    { value: "When to use", description: "View or edit the criteria Jev sees", preview: route.when_to_use },
+    { value: "Model", description: route.model },
+    { value: "Thinking", description: route.thinking },
+    { value: "Remove route", description: "Requires save confirmation" },
+  ];
+  const field = await pickConfigItem(ctx, route.label, fields.map((item) => ({ ...item, label: item.value })), { hint: `${route.name} · ${route.model} (${route.thinking})` });
   switch (field) {
     case "Name":
     case "Label":
-    case "When to use":
-    case "Model": {
-      const keys = { Name: "name", Label: "label", "When to use": "when_to_use", Model: "model" } as const;
+    case "When to use": {
+      const keys = { Name: "name", Label: "label", "When to use": "when_to_use" } as const;
       const key = keys[field];
       const value = await ui.editor(field, route[key]);
       if (value === undefined) return;
       return { ...route, [key]: value };
     }
+    case "Model": {
+      const choice = await editModel(ctx, route);
+      return choice && { ...route, ...choice };
+    }
     case "Thinking": {
-      const thinking = await pickThinking(ui, route.thinking);
+      const thinking = await pickThinking(ctx, route.model, route.thinking);
       if (thinking === undefined) return;
       return { ...route, thinking };
     }
@@ -56,10 +83,10 @@ async function editRoute(ui: UI, route: Route): Promise<Route | "remove" | undef
   }
 }
 
-async function editOptionalModel(ui: UI, title: string, current: ModelChoice | undefined) {
-  const action = await ui.select(`${title}: ${current ? `${current.model} (${current.thinking})` : "not set"}`, ["Set model and thinking", "Clear setting"]);
+async function editOptionalModel(ctx: ExtensionCommandContext, title: string, current: ModelChoice | undefined) {
+  const action = await ctx.ui.select(`${title}: ${current ? `${current.model} (${current.thinking})` : "not set"}`, ["Set model and thinking", "Clear setting"]);
   if (action === "Clear setting") return null;
-  if (action === "Set model and thinking") return editModel(ui, current ?? { model: "", thinking: "off" });
+  if (action === "Set model and thinking") return editModel(ctx, current ?? { model: "", thinking: "off" });
 }
 
 async function saveConfig(path: URL, original: string, contents: string, signal: AbortSignal) {
@@ -68,7 +95,7 @@ async function saveConfig(path: URL, original: string, contents: string, signal:
     const draft = join(tempDir, "router.json");
     await writeFile(draft, contents, { mode: 0o600, signal });
     if (await readFile(path, { encoding: "utf8", signal }) !== original) {
-      throw new Error("router.json changed while the menu was open. Reopen /router-config to edit the latest version.");
+      throw new Error(`router.json changed while the menu was open. Reopen ${configCommand} to edit the latest version.`);
     }
     signal.throwIfAborted();
     await rename(draft, path);
@@ -80,17 +107,21 @@ async function saveConfig(path: URL, original: string, contents: string, signal:
 export async function showConfigMenu(ctx: ExtensionCommandContext, path: URL, signal: AbortSignal) {
   const { ui } = ctx;
   if (!ctx.hasUI) {
-    ui.notify("/router-config requires an interactive Pi UI.", "warning");
+    ui.notify(`${configCommand} requires an interactive Pi UI.`, "warning");
     return;
   }
   try {
     const original = await readFile(path, { encoding: "utf8", signal });
     const config = parseConfig(original);
-    const rows = config.routes.map((row) => `${row.name} · ${row.model} (${row.thinking})`);
-    const action = await ui.select("Router config · choose what to edit", ["Add route", "Classifier order", "Base model", "Routing model", ...rows]);
+    const rows = config.routes.map((row) => ({
+      value: row.name, label: row.label, description: `${row.model} · ${row.thinking}`,
+      preview: `${row.name} · ${row.model} (${row.thinking})\n\nWhen to use: ${row.when_to_use}`,
+    }));
+    const actions = ["Add route", "Classifier order", "Base model", "Routing model"].map((value) => ({ value, label: value }));
+    const action = await pickConfigItem(ctx, "Subagent router · rubric", [...rows, ...actions], { hint: `${rows.length} routes · router.json · Select a route to edit` });
     if (action === undefined) return;
     if (action === "Add route") {
-      const route = await addRoute(ui);
+      const route = await addRoute(ctx);
       if (!route) return;
       config.routes.push(route);
     } else if (action === "Classifier order") {
@@ -99,12 +130,13 @@ export async function showConfigMenu(ctx: ExtensionCommandContext, path: URL, si
       config.classifiers = ids.split("\n").map((id) => id.trim()).filter(Boolean);
     } else if (action === "Base model" || action === "Routing model") {
       const key = action === "Base model" ? "base_agent" : "routing_model";
-      const choice = await editOptionalModel(ui, action, config[key]);
+      const choice = await editOptionalModel(ctx, action, config[key]);
       if (choice === undefined) return;
       config[key] = choice ?? undefined;
     } else {
-      const index = rows.indexOf(action);
-      const updated = await editRoute(ui, config.routes[index]);
+      const index = rows.findIndex(({ value }) => value === action);
+      if (index < 0) return;
+      const updated = await editRoute(ctx, config.routes[index]);
       if (!updated) return;
       if (updated === "remove") config.routes.splice(index, 1);
       else config.routes[index] = updated;

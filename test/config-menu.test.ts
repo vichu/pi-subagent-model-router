@@ -10,7 +10,8 @@ const row = { name: "writing", label: "Writing", when_to_use: "Draft prose", mod
 const other = { ...row, name: "review", label: "Review" };
 const base = { version: 1, routes: [row, other], base_agent: { model: "demo/base", thinking: "low" } };
 const original = JSON.stringify(base);
-const route = "writing · demo/writer (off)";
+const route = "writing";
+const models = ["writer", "base", "short", "routing", "updated", "new"].map((id) => ({ id, name: id, provider: "demo", reasoning: id !== "short" }));
 let directory: string;
 let path: URL;
 
@@ -28,9 +29,10 @@ function setup(selects: Array<string | undefined> = [], edits: Array<string | un
     confirm: vi.fn().mockResolvedValue(true),
     notify: vi.fn(),
   };
-  const ctx = { hasUI, ui } as unknown as ExtensionCommandContext;
+  const modelRegistry = { getAvailable: vi.fn(() => models), find: vi.fn((provider: string, id: string) => models.find((model) => model.provider === provider && model.id === id)) };
+  const ctx = { hasUI, ui, modelRegistry, mode: "rpc" } as unknown as ExtensionCommandContext;
   const abort = new AbortController();
-  return { ui, abort, run: () => showConfigMenu(ctx, path, abort.signal) };
+  return { ui, abort, modelRegistry, run: () => showConfigMenu(ctx, path, abort.signal) };
 }
 const stored = async () => JSON.parse(await readFile(path, "utf8"));
 
@@ -38,7 +40,6 @@ const routeEdits = [
   ["Name", "writer_task", "name"],
   ["Label", "Docs writer", "label"],
   ["When to use", "Write prose.\nDo not use for reviews.", "when_to_use"],
-  ["Model", "demo/new", "model"],
 ] as const;
 test.each(routeEdits)("edits %s as a field using the previous value", async (field, value, key) => {
   const { run, ui } = setup([route, field], [value]);
@@ -52,30 +53,44 @@ test.each(routeEdits)("edits %s as a field using the previous value", async (fie
 test("edits thinking with a picker", async () => {
   const { run, ui } = setup([route, "Thinking", "high"]);
   await run();
-  expect(ui.select).toHaveBeenLastCalledWith(expect.stringContaining("current: off"), ["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+  expect(ui.select).toHaveBeenLastCalledWith("Thinking level", ["off", "minimal", "low", "medium", "high"]);
   expect((await stored()).routes[0].thinking).toBe("high");
 });
 
 test("adds and removes a route after confirmation", async () => {
-  const { run } = setup(["Add route", "high"], ["docs", "Docs", "Draft a README", "demo/short"]);
+  const { run, ui } = setup(["Add route", "demo/short", "off"], ["docs", "Docs", "Draft a README"]);
   await run();
-  expect((await stored()).routes[2]).toEqual({ name: "docs", label: "Docs", when_to_use: "Draft a README", model: "demo/short", thinking: "high" });
+  expect(ui.select).toHaveBeenLastCalledWith("Thinking level", ["off"]);
+  expect((await stored()).routes[2]).toEqual({ name: "docs", label: "Docs", when_to_use: "Draft a README", model: "demo/short", thinking: "off" });
   await setup([route, "Remove route"]).run();
   expect((await stored()).routes.map(({ name }: typeof row) => name)).toEqual(["review", "docs"]);
 });
 
 test("sets a routing model and clears the configured base model", async () => {
-  await setup(["Routing model", "Set model and thinking", "medium"], ["demo/routing"]).run();
+  await setup(["Routing model", "Set model and thinking", "demo/routing", "medium"]).run();
   expect((await stored()).routing_model).toEqual({ model: "demo/routing", thinking: "medium" });
   await setup(["Base model", "Clear setting"]).run();
   expect((await stored()).base_agent).toBeUndefined();
 });
 
-test("prefills an existing base model", async () => {
-  const { run, ui } = setup(["Base model", "Set model and thinking", "low"], ["demo/updated"]);
+test("selects an available model without opening a text editor", async () => {
+  const { run, ui } = setup([route, "Model", "demo/updated", "low"]);
   await run();
-  expect(ui.editor).toHaveBeenCalledWith("Model ID (provider/id)", "demo/base");
-  expect((await stored()).base_agent).toEqual({ model: "demo/updated", thinking: "low" });
+  expect(ui.select).toHaveBeenCalledWith("Available models", ["demo/base", "demo/new", "demo/routing", "demo/short", "demo/updated", "demo/writer"]);
+  expect(ui.editor).not.toHaveBeenCalled();
+  expect((await stored()).routes[0]).toMatchObject({ model: "demo/updated", thinking: "low" });
+});
+
+test("helps recover if models are unavailable or unknown", async () => {
+  const noModels = setup([route, "Model"]);
+  noModels.modelRegistry.getAvailable.mockReturnValue([]);
+  await noModels.run();
+  expect(noModels.ui.notify).toHaveBeenCalledWith(expect.stringContaining("No chat models available"), "warning");
+  const unknown = setup([route, "Thinking"]);
+  unknown.modelRegistry.find.mockReturnValue(undefined);
+  await unknown.run();
+  expect(unknown.ui.notify).toHaveBeenCalledWith(expect.stringContaining("not in Pi’s catalog"), "warning");
+  expect(await readFile(path, "utf8")).toBe(original);
 });
 
 test("changes classifier priority and supports disabling classifiers", async () => {
@@ -86,9 +101,9 @@ test("changes classifier priority and supports disabling classifiers", async () 
 });
 
 test.each<[string[], string[]]>([
-  [[], []], [[route], []], [[route, "Label"], []], [[route, "Thinking"], []],
+  [[], []], [["unknown route"], []], [[route], []], [[route, "Label"], []], [[route, "Thinking"], []], [[route, "Model"], []],
   [["Classifier order"], []], [["Base model"], []], [["Routing model", "Set model and thinking"], []],
-  [["Routing model", "Set model and thinking"], ["demo/new"]],
+  [["Routing model", "Set model and thinking", "demo/new"], []],
   [["Add route"], []], [["Add route"], ["key"]], [["Add route"], ["key", "Label"]],
   [["Add route"], ["key", "Label", "Criteria"]],
 ])("cancels without writing for selections %j and fields %j", async (selects, edits) => {
