@@ -1,5 +1,7 @@
 import type { SubagentDelegationThinking as Thinking } from "pi-subagents/delegation";
 
+export const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly Thinking[];
+
 export type ModelChoice = { model: string; thinking: Thinking };
 export type Route = ModelChoice & { name: string; label: string; when_to_use: string };
 export type RouterConfig = {
@@ -33,7 +35,7 @@ function modelId(value: unknown, field: string): string {
 function choice(value: unknown, field: string): ModelChoice {
   const row = object(value, field);
   const thinking = row.thinking as Thinking;
-  if (!["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(thinking)) {
+  if (!thinkingLevels.includes(thinking)) {
     throw new Error(`${field}.thinking must be off, minimal, low, medium, high, xhigh, or max`);
   }
   return { model: modelId(row.model, `${field}.model`), thinking };

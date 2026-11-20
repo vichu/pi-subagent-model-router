@@ -6,6 +6,7 @@ import type {
   SubagentDelegationResponse,
 } from "pi-subagents/delegation";
 
+import { showConfigMenu } from "./config-menu.ts";
 import { type ModelChoice, parseConfig } from "./config.ts";
 import { formatHistory, type RunReceipt, runEntryType } from "./history.ts";
 import { determineRoute } from "./router.ts";
@@ -52,6 +53,11 @@ function launch(
 export default function router(pi: ExtensionAPI) {
   const session = new AbortController();
   pi.on("session_shutdown", () => { session.abort(); });
+
+  pi.registerCommand("router-config", {
+    description: "Edit router.json with interactive menus",
+    handler: async (_args, ctx) => showConfigMenu(ctx, configFile, session.signal),
+  });
 
   pi.registerCommand("router-history", {
     description: "Show router-launched subagents and their models on this session branch",

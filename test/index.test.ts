@@ -37,7 +37,7 @@ function setup() {
   } } as unknown as ExtensionAPI);
   const getHandler = (name: string) => registerCommand.mock.calls.find(([key]) => key === name)?.[1].handler as (input: string, ctx: ExtensionCommandContext) => Promise<void>;
   const ctx = { cwd: "/demo", ui: { notify }, sessionManager: { getBranch: () => entries }, modelRegistry: { getAvailableOfType, classify, find: vi.fn().mockReturnValue({}), hasConfiguredAuth: () => true } } as unknown as ExtensionCommandContext;
-  return { bus, notify, appendEntry, getAvailableOfType, classify, history: () => getHandler("router-history")("", ctx), run: (input = args, model = ctx.model) => getHandler("router-run")(input, { ...ctx, model }), shutdown: () => on.mock.calls[0][1]() };
+  return { bus, notify, appendEntry, getAvailableOfType, classify, editConfig: () => getHandler("router-config")("", ctx), history: () => getHandler("router-history")("", ctx), run: (input = args, model = ctx.model) => getHandler("router-run")(input, { ...ctx, model }), shutdown: () => on.mock.calls[0][1]() };
 }
 
 test.each([
@@ -58,6 +58,23 @@ test.each([
   expect(vi.mocked(readFile).mock.calls[0][0]).toEqual(new URL("../router.json", import.meta.url));
   expect(bus.listenerCount(responseEvent)).toBe(0);
   expect(notify).toHaveBeenCalledWith(`${route}: requested ${model} (${thinking}); effective ${model} (${thinking})\ndone`, "info");
+});
+
+test("registers the config editor and delegates UI availability checks", async () => {
+  const { editConfig, notify } = setup();
+  await editConfig();
+  expect(notify).toHaveBeenCalledWith("/router-config requires an interactive Pi UI.", "warning");
+});
+
+test("applies updated rubric criteria and launch settings on the next run in the same session", async () => {
+  const { bus, classify, run } = setup();
+  const requests = vi.fn((req: SubagentDelegationRequest) => bus.emit(responseEvent, { ...req, status: "completed", result: { kind: "text", text: "done" } }));
+  bus.on(requestEvent, requests);
+  await run();
+  vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes: [{ ...routes[0], when_to_use: "Draft short notes", model: "demo/new", thinking: "high" }, routes[1]] }));
+  await run();
+  expect(requests.mock.calls.map(([req]) => [req.model, req.thinking])).toEqual([["demo/writer", "off"], ["demo/new", "high"]]);
+  expect(classify.mock.calls[1][1].questions.route.criteria.writing).toBe("Writing: Draft short notes");
 });
 
 test("shows one persisted row per request, including reported effective settings", async () => {

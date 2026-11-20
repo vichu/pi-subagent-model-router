@@ -18,7 +18,9 @@ Trust this checkout when prompted so `pi-subagents` can discover the generic too
 
 ## Configure routing
 
-Edit the repo’s [`router.json`](router.json). It is the only routing config: `/router-run` reads it from the extension’s checkout on every invocation, regardless of Pi’s working directory. No config path or persona is selected at runtime. Use provider-qualified model IDs available in your Pi session. OpenAI’s Decisions API requires an API key; ChatGPT sign-in does not support it.
+Run `/router-config` in Pi to edit the routing matrix without editing JSON. Select a route to edit its name, label, criteria, model, or thinking level, or to remove it. The same menu can add routes, reorder classifiers, and set or clear the base and routing models. Each change is validated and requires save confirmation; press Esc to cancel.
+
+The repo’s [`router.json`](router.json) remains the only routing config. `/router-run` reads it from the extension’s checkout on every invocation, regardless of Pi’s working directory. Saved edits apply to the next run without reloading and don’t change a worker already running. No config path or persona is selected at runtime. Use provider-qualified model IDs available in your Pi session. OpenAI’s Decisions API requires an API key; ChatGPT sign-in does not support it.
 
 | Field | Meaning |
 | --- | --- |
