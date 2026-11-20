@@ -1,5 +1,7 @@
 import type { SubagentDelegationThinking as Thinking } from "pi-subagents/delegation";
 
+export const routerCommand = "subagent-router";
+
 export const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly Thinking[];
 
 export type ModelChoice = { model: string; thinking: Thinking };

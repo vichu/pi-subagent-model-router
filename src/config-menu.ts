@@ -4,9 +4,7 @@ import { fileURLToPath } from "node:url";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { pickConfigItem } from "./config-picker.ts";
-import { type ModelChoice, parseConfig, type Route, splitModel } from "./config.ts";
-
-const configCommand = "/subagent-router-config";
+import { type ModelChoice, parseConfig, type Route, routerCommand, splitModel } from "./config.ts";
 
 async function pickThinking(ctx: ExtensionCommandContext, modelId: string, current: ModelChoice["thinking"]) {
   const model = ctx.modelRegistry.find(...splitModel(modelId));
@@ -95,7 +93,7 @@ async function saveConfig(path: URL, original: string, contents: string, signal:
     const draft = join(tempDir, "router.json");
     await writeFile(draft, contents, { mode: 0o600, signal });
     if (await readFile(path, { encoding: "utf8", signal }) !== original) {
-      throw new Error(`router.json changed while the menu was open. Reopen ${configCommand} to edit the latest version.`);
+      throw new Error(`router.json changed while the menu was open. Reopen Rubric and settings to edit the latest version.`);
     }
     signal.throwIfAborted();
     await rename(draft, path);
@@ -107,7 +105,7 @@ async function saveConfig(path: URL, original: string, contents: string, signal:
 export async function showConfigMenu(ctx: ExtensionCommandContext, path: URL, signal: AbortSignal) {
   const { ui } = ctx;
   if (!ctx.hasUI) {
-    ui.notify(`${configCommand} requires an interactive Pi UI.`, "warning");
+    ui.notify(`/${routerCommand} requires an interactive Pi UI.`, "warning");
     return;
   }
   try {

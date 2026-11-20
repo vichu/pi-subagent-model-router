@@ -35,9 +35,22 @@ function setup() {
       return () => bus.off(event, listener);
     },
   } } as unknown as ExtensionAPI);
-  const getHandler = (name: string) => registerCommand.mock.calls.find(([key]) => key === name)?.[1].handler as (input: string, ctx: ExtensionCommandContext) => Promise<void>;
-  const ctx = { cwd: "/demo", ui: { notify }, sessionManager: { getBranch: () => entries }, modelRegistry: { getAvailableOfType, classify, find: vi.fn().mockReturnValue({}), hasConfiguredAuth: () => true } } as unknown as ExtensionCommandContext;
-  return { bus, notify, appendEntry, getAvailableOfType, classify, editConfig: () => getHandler("subagent-router-config")("", ctx), history: () => getHandler("router-history")("", ctx), run: (input = args, model = ctx.model) => getHandler("router-run")(input, { ...ctx, model }), shutdown: () => on.mock.calls[0][1]() };
+  const handler = registerCommand.mock.calls[0][1].handler as (input: string, ctx: ExtensionCommandContext) => Promise<void>;
+  const select = vi.fn<(title: string, options: string[]) => Promise<string | undefined>>().mockResolvedValue(undefined);
+  const editor = vi.fn<(title: string) => Promise<string | undefined>>();
+  const ctx = { cwd: "/demo", hasUI: true, mode: "rpc", ui: { notify, select, editor }, sessionManager: { getBranch: () => entries }, modelRegistry: { getAvailableOfType, classify, find: vi.fn().mockReturnValue({}), hasConfiguredAuth: () => true } } as unknown as ExtensionCommandContext;
+  const open = (overrides: Partial<ExtensionCommandContext> = {}) => handler("", { ...ctx, ...overrides });
+  const history = async () => {
+    select.mockResolvedValueOnce("Session history");
+    await open();
+    return select.mock.calls.filter(([title]) => title.startsWith("Subagent router · session history")).at(-1)?.[0];
+  };
+  const run = (input = args, model = ctx.model) => {
+    select.mockResolvedValueOnce("Run a brief");
+    editor.mockResolvedValueOnce(input);
+    return open({ model });
+  };
+  return { bus, notify, appendEntry, getAvailableOfType, classify, registerCommand, select, open, history, run, shutdown: () => on.mock.calls[0][1]() };
 }
 
 test.each([
@@ -60,10 +73,33 @@ test.each([
   expect(notify).toHaveBeenCalledWith(`${route}: requested ${model} (${thinking}); effective ${model} (${thinking})\ndone`, "info");
 });
 
-test("registers the config editor and delegates UI availability checks", async () => {
-  const { editConfig, notify } = setup();
-  await editConfig();
-  expect(notify).toHaveBeenCalledWith("/subagent-router-config requires an interactive Pi UI.", "warning");
+test("registers only the workspace command and checks UI availability", async () => {
+  const { registerCommand, open, notify } = setup();
+  expect(registerCommand.mock.calls.map(([name]) => name)).toEqual(["subagent-router"]);
+  await open({ hasUI: false });
+  expect(notify).toHaveBeenCalledWith("/subagent-router requires an interactive Pi UI.", "warning");
+});
+
+test("opens settings from home and returns there when the submenu closes", async () => {
+  const { open, select } = setup();
+  select.mockResolvedValueOnce("Rubric and settings");
+  await open();
+  expect(select.mock.calls.map(([title]) => title)).toEqual(["Subagent router · home", "Subagent router · rubric", "Subagent router · home"]);
+});
+
+test("cancels brief entry back to home without reading configuration", async () => {
+  const { open, select } = setup();
+  select.mockResolvedValueOnce("Run a brief");
+  await open();
+  expect(select).toHaveBeenCalledTimes(2);
+  expect(readFile).not.toHaveBeenCalled();
+});
+
+test("does not open a workspace after shutdown", async () => {
+  const { open, select, shutdown } = setup();
+  shutdown();
+  await open();
+  expect(select).not.toHaveBeenCalled();
 });
 
 test("applies updated rubric criteria and launch settings on the next run in the same session", async () => {
@@ -94,28 +130,25 @@ test("disabling blocks all routing work and re-enabling works in the same sessio
 });
 
 test("shows one persisted row per request, including reported effective settings", async () => {
-  const { bus, notify, run, history, appendEntry } = setup();
-  await history();
-  expect(notify).toHaveBeenLastCalledWith(expect.stringContaining("No router runs"), "info");
+  const { bus, run, history, appendEntry } = setup();
+  expect(await history()).toContain("No router runs");
   bus.on(requestEvent, (req) => bus.emit(responseEvent, { ...req, status: "completed", runId: "worker-123", model: "demo/real", thinking: "low", result: { kind: "text", text: "private output" } }));
   await run();
-  await history();
-  expect(notify).toHaveBeenLastCalledWith("Router runs on this session branch:\nrouter-spike-worker · writing · completed · classifier: typesafe/jev-latest\n  Requested: demo/writer (off); effective: demo/real (low)\n  Run: worker-123", "info");
+  expect(await history()).toBe("Subagent router · session history\nwriting · completed · router-spike-worker\nRequested: demo/writer (off)\nEffective: demo/real (low)\nClassifier: typesafe/jev-latest\nRun: worker-123");
   expect(JSON.stringify(appendEntry.mock.calls)).not.toMatch(/Summarize this|private output/);
 });
 
 test("keeps rejected requests distinct from confirmed launches", async () => {
-  const { bus, notify, run, history } = setup();
+  const { bus, run, history } = setup();
   bus.on(requestEvent, ({ requestId, ownerRunId, nodeId }) => bus.emit(responseEvent, { requestId, ownerRunId, nodeId, status: "invalid_request" }));
   await run();
-  await history();
-  expect(notify).toHaveBeenLastCalledWith(expect.stringMatching(/invalid_request[\s\S]*effective: unknown \(unknown\)[\s\S]*unconfirmed/), "info");
+  expect(await history()).toMatch(/invalid_request[\s\S]*Effective: unknown \(unknown\)[\s\S]*unconfirmed/);
 });
 
 test("shows usage without reading config or classifying an empty brief", async () => {
   const { notify, getAvailableOfType, run } = setup();
   await run("   ");
-  expect(notify).toHaveBeenCalledWith("Usage: /router-run <brief>", "warning");
+  expect(notify).toHaveBeenCalledWith("Enter a nonempty task brief.", "warning");
   expect(readFile).not.toHaveBeenCalled();
   expect(getAvailableOfType).not.toHaveBeenCalled();
 });
@@ -132,7 +165,7 @@ test.each([
 });
 
 test("cancels the exact child and removes listeners on session shutdown", async () => {
-  const { bus, notify, run, shutdown, history } = setup();
+  const { bus, notify, run, shutdown, appendEntry } = setup();
   const cancel = vi.fn();
   bus.on(cancelEvent, cancel);
   bus.on(requestEvent, ({ requestId, ownerRunId, nodeId }) => {
@@ -142,8 +175,7 @@ test("cancels the exact child and removes listeners on session shutdown", async 
   await run();
   expect(bus.listenerCount(responseEvent)).toBe(0);
   expect(notify).toHaveBeenCalledWith(expect.stringContaining("Child cancelled"), "error");
-  await history();
-  expect(notify).toHaveBeenLastCalledWith(expect.stringMatching(/submitted[\s\S]*unconfirmed/), "info");
+  expect(appendEntry).toHaveBeenCalledExactlyOnceWith(runEntryType, expect.objectContaining({ status: "submitted" }));
 });
 
 test("reports unreadable config", async () => {
@@ -177,10 +209,8 @@ test("warns once when using the base model and records both attempts", async () 
   await run("Draft a note", base);
   expect(notify.mock.calls.filter(([, level]) => level === "warning")).toHaveLength(1);
   expect(notify).toHaveBeenCalledWith(expect.stringContaining("base fallback: requested demo/base (off)"), "info");
-  await history();
-  const [report, level] = notify.mock.lastCall!;
-  expect(level).toBe("info");
-  expect(report.match(/base fallback · completed · classifier: none/g)).toHaveLength(2);
+  const report = await history();
+  expect(report?.match(/base fallback · completed[\s\S]*?Classifier: none/g)).toHaveLength(2);
 });
 
 test("does not launch when shutdown precedes the classifier response", async () => {

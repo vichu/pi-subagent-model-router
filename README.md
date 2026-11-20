@@ -16,13 +16,15 @@ pi -e ./src/index.ts
 
 Trust this checkout when prompted so `pi-subagents` can discover the generic tool-free worker. Its blank `tools:` field is intentional. It is a launcher requirement, not a routing persona; all routes use the same worker.
 
-## Configure routing
+## Router workspace
 
-Run `/subagent-router-config` in Pi to browse the rubric without editing JSON. The rubric, pickers, and edit controls open inline in the editor area at the bottom, not over the conversation. Use ↑/↓ to preview a route’s criteria, model, and thinking level; press Enter to edit and Esc to back out. In the model dropdown, type to filter Pi’s available chat models by name, provider, or ID. The thinking dropdown shows the levels supported by the selected model.
+Run `/subagent-router` in Pi. The home screen and its controls open inline in the editor area at the bottom, not over the conversation. Choose **Run a brief**, **Rubric and settings**, or **Session history**. Press Esc to back out.
 
-Use **Router status** to enable or disable routing. While disabled, `/router-run` does not call a classifier or start a worker. The config menu and history remain available. The same menu can add or remove routes, reorder classifiers, and set or clear the base and routing models. Select **When to use** to view or edit the full criteria. Each change is validated and requires save confirmation.
+In **Rubric and settings**, use ↑/↓ to preview a route’s criteria, model, and thinking level, and Enter to edit. In the model dropdown, type to filter Pi’s available chat models by name, provider, or ID. The thinking dropdown shows the levels supported by the selected model.
 
-The repo’s [`router.json`](router.json) remains the only routing config. `/router-run` reads it from the extension’s checkout on every invocation, regardless of Pi’s working directory. Saved edits apply to the next run without reloading and don’t change a worker already running. No config path or persona is selected at runtime. Use provider-qualified model IDs available in your Pi session. OpenAI’s Decisions API requires an API key; ChatGPT sign-in does not support it.
+Use **Router status** to enable or disable routing. While disabled, **Run a brief** does not call a classifier or start a worker. The config menu and history remain available. The same menu can add or remove routes, reorder classifiers, and set or clear the base and routing models. Select **When to use** to view or edit the full criteria. Each change is validated and requires save confirmation.
+
+The repo’s [`router.json`](router.json) remains the only routing config. The router reads it from the extension’s checkout for every brief, regardless of Pi’s working directory. Saved edits apply to the next run without reloading and don’t change a worker already running. No config path or persona is selected at runtime. Use provider-qualified model IDs available in your Pi session. OpenAI’s Decisions API requires an API key; ChatGPT sign-in does not support it.
 
 | Field | Meaning |
 | --- | --- |
@@ -41,7 +43,7 @@ The classifier receives the brief, route names, labels, and criteria—not worke
 
 [`router.json`](router.json) includes three implementation tiers: Luna 6 (`low`) for localized edits, Sol 6.2 (`medium`) for multi-module work within one repo, and Sol 6.2 (`high`) for inherently complex changes that need product context across repos. Routine CLI and Git work uses Luna 6 (`low`); architecture discussions use Opus 5.5 (`medium`), LaTeX work uses Opus 5.5 (`medium`), and high-risk architecture or refactor planning uses Opus 5.5 (`high`).
 
-Try `/router-run <brief>` with a brief below. These are routing checks: the current worker can discuss the brief or return a sketch, but cannot execute commands or inspect or edit files. Normal Pi tool calls are not intercepted.
+Open `/subagent-router` → **Run a brief** and submit one of the examples below. These are routing checks: the current worker can discuss the brief or return a sketch, but cannot execute commands or inspect or edit files. Normal Pi tool calls are not intercepted.
 
 | Sample brief | Expected route |
 | --- | --- |
@@ -63,9 +65,9 @@ Try `/router-run <brief>` with a brief below. These are routing checks: the curr
 
 ## See which models ran
 
-Run `/router-history` in the same Pi session. It shows router requests on the active session branch, including the route, classifier, run ID when available, outcome, and requested versus effective model and thinking. A `submitted` or `unconfirmed` entry is not proof the worker ran. Receipts are stored in the Pi session and survive reload/resume for saved sessions. They do not include the brief or worker output and are not sent to the model.
+Open `/subagent-router` → **Session history** to see router requests on the active session branch, including the route, classifier, run ID when available, outcome, and requested versus effective model and thinking. A `submitted` or `unconfirmed` entry is not proof the worker ran. Receipts are stored in the Pi session and survive reload/resume for saved sessions. They do not include the brief or worker output and are not sent to the model.
 
-This starts recording only after loading this version; it cannot reconstruct earlier router commands. For ordinary `pi-subagents` calls outside the router, inspect the original tool result or completion card, or use `/subagent-cost` for the native accounting view. `/router-history` does not include those calls.
+History includes earlier runs that already have saved router receipts; it cannot reconstruct runs made before receipts were recorded. For ordinary `pi-subagents` calls outside the router, inspect the original tool result or completion card, or use `/subagent-cost` for the native accounting view.
 
 ## Development
 

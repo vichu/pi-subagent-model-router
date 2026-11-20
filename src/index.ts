@@ -7,8 +7,9 @@ import type {
 } from "pi-subagents/delegation";
 
 import { showConfigMenu } from "./config-menu.ts";
-import { type ModelChoice, parseConfig } from "./config.ts";
-import { formatHistory, type RunReceipt, runEntryType } from "./history.ts";
+import { pickConfigItem } from "./config-picker.ts";
+import { type ModelChoice, parseConfig, routerCommand } from "./config.ts";
+import { showHistory, type RunReceipt, runEntryType } from "./history.ts";
 import { determineRoute } from "./router.ts";
 
 // Public wire contract. pi-subagents is loaded separately as a Pi extension,
@@ -54,18 +55,6 @@ export default function router(pi: ExtensionAPI) {
   const session = new AbortController();
   pi.on("session_shutdown", () => { session.abort(); });
 
-  pi.registerCommand("subagent-router-config", {
-    description: "Edit router.json with interactive menus",
-    handler: async (_args, ctx) => showConfigMenu(ctx, configFile, session.signal),
-  });
-
-  pi.registerCommand("router-history", {
-    description: "Show router-launched subagents and their models on this session branch",
-    async handler(_args, ctx) {
-      ctx.ui.notify(formatHistory(ctx.sessionManager.getBranch()), "info");
-    },
-  });
-
   async function runChild(ctx: ExtensionCommandContext, task: string, route: string, requested: ModelChoice, backend: string | null) {
     const signal = AbortSignal.any([session.signal, AbortSignal.timeout(childTimeoutMs + 5_000)]);
     signal.throwIfAborted();
@@ -92,29 +81,60 @@ export default function router(pi: ExtensionAPI) {
   }
 
   let warnedAboutBase = false;
-  pi.registerCommand("router-run", {
-    description: "Route a brief using JSON config and run a tool-free worker",
-    async handler(args, ctx) {
-      const task = args.trim();
-      if (!task) {
-        ctx.ui.notify("Usage: /router-run <brief>", "warning");
+  async function runBrief(ctx: ExtensionCommandContext, task: string) {
+    try {
+      const config = parseConfig(await readFile(configFile, { encoding: "utf8", signal: session.signal }));
+      if (!config.enabled) {
+        ctx.ui.notify("Subagent routing is disabled. Re-enable it under Rubric and settings → Router status.", "info");
         return;
       }
-      try {
-        const config = parseConfig(await readFile(configFile, { encoding: "utf8", signal: session.signal }));
-        if (!config.enabled) {
-          ctx.ui.notify("Subagent routing is disabled. Re-enable it in /subagent-router-config.", "info");
-          return;
+      const current = ctx.model && { model: `${ctx.model.provider}/${ctx.model.id}`, thinking: pi.getThinkingLevel() };
+      const decision = await determineRoute(config, task, ctx.modelRegistry, current, session.signal);
+      if (decision.route || !warnedAboutBase) {
+        if (decision.notes.length) ctx.ui.notify(decision.notes.join("\n"), "warning");
+        if (!decision.route) warnedAboutBase = true;
+      }
+      await runChild(ctx, task, decision.route ?? "base fallback", decision.target, decision.backend);
+    } catch (error) {
+      ctx.ui.notify(`Router: ${String(error)}`, "error");
+    }
+  }
+
+  const actions = [
+    { value: "Run a brief", label: "Run a brief", description: "Classify a task and start a worker" },
+    { value: "Rubric and settings", label: "Rubric and settings", description: "Browse routes, edit models, or toggle routing" },
+    { value: "Session history", label: "Session history", description: "Inspect routes and effective models used" },
+  ];
+  pi.registerCommand(routerCommand, {
+    description: "Open the inline subagent router workspace",
+    async handler(_args, ctx) {
+      if (!ctx.hasUI) {
+        ctx.ui.notify(`/${routerCommand} requires an interactive Pi UI.`, "warning");
+        return;
+      }
+      while (!session.signal.aborted) {
+        const action = await pickConfigItem(ctx, "Subagent router · home", actions);
+        switch (action) {
+          case "Run a brief": {
+            const brief = await ctx.ui.editor("Subagent router · enter a task brief (Esc to go back)");
+            if (brief === undefined) break;
+            const task = brief.trim();
+            if (!task) {
+              ctx.ui.notify("Enter a nonempty task brief.", "warning");
+              break;
+            }
+            await runBrief(ctx, task);
+            return;
+          }
+          case "Rubric and settings":
+            await showConfigMenu(ctx, configFile, session.signal);
+            break;
+          case "Session history":
+            await showHistory(ctx);
+            break;
+          default:
+            return;
         }
-        const current = ctx.model && { model: `${ctx.model.provider}/${ctx.model.id}`, thinking: pi.getThinkingLevel() };
-        const decision = await determineRoute(config, task, ctx.modelRegistry, current, session.signal);
-        if (decision.route || !warnedAboutBase) {
-          if (decision.notes.length) ctx.ui.notify(decision.notes.join("\n"), "warning");
-          if (!decision.route) warnedAboutBase = true;
-        }
-        await runChild(ctx, task, decision.route ?? "base fallback", decision.target, decision.backend);
-      } catch (error) {
-        ctx.ui.notify(`Router: ${String(error)}`, "error");
       }
     },
   });
