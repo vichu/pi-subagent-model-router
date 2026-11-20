@@ -1,0 +1,28 @@
+{
+  "name": "pi-subagent-model-router",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Config-driven model routing for Pi subagents (integration spike)",
+  "type": "module",
+  "license": "MIT",
+  "keywords": ["pi-package", "pi", "subagents"],
+  "files": ["src"],
+  "pi": { "extensions": ["./src/index.ts"] },
+  "engines": { "node": ">=22.19.0" },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --coverage"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "pi-subagents": "0.89.1"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.5.2",
+    "@types/node": "^22",
+    "@vitest/coverage-v8": "4.1.9",
+    "pi-subagents": "0.89.1",
+    "typescript": "~5.9.3",
+    "vitest": "4.1.9"
+  }
+}

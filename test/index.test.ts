@@ -1,0 +1,112 @@
+import { EventEmitter } from "node:events";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { SubagentDelegationRequest } from "pi-subagents/delegation";
+import { expect, test, vi } from "vitest";
+import routerSpike from "../src/index.ts";
+
+const requestEvent = "prompt-template:subagent:request";
+const responseEvent = "prompt-template:subagent:response";
+const cancelEvent = "prompt-template:subagent:cancel";
+const args = "typesafe/jev-latest demo/writer demo/analyst Summarize this\nbrief.";
+const answer = (choice: string) => ({ stopReason: "stop", answers: { route: { type: "choice", choice } } });
+
+function setup() {
+  const bus = new EventEmitter();
+  const notify = vi.fn();
+  const getAvailableOfType = vi.fn().mockResolvedValue([{ id: "jev-latest" }]);
+  const classify = vi.fn().mockResolvedValue(answer("writing"));
+  const on = vi.fn();
+  const registerCommand = vi.fn();
+  routerSpike({ on, registerCommand, events: {
+    emit: bus.emit.bind(bus),
+    on: (event: string, listener: (data: unknown) => void) => {
+      bus.on(event, listener);
+      return () => bus.off(event, listener);
+    },
+  } } as unknown as ExtensionAPI);
+  const handler = registerCommand.mock.calls[0][1].handler as (input: string, ctx: ExtensionCommandContext) => Promise<void>;
+  const ctx = { cwd: "/demo", ui: { notify }, modelRegistry: { getAvailableOfType, classify } } as unknown as ExtensionCommandContext;
+  return { bus, notify, getAvailableOfType, classify, run: (input = args) => handler(input, ctx), shutdown: () => on.mock.calls[0][1]() };
+}
+
+test.each([
+  ["writing", "demo/writer", "off"],
+  ["analysis", "demo/analyst", "low"],
+])("uses the configured override for %s and correlates the terminal response", async (route, model, thinking) => {
+  const { bus, classify, notify, run } = setup();
+  classify.mockResolvedValue(answer(route));
+  bus.on(requestEvent, (req: SubagentDelegationRequest) => {
+    expect(classify).toHaveBeenCalledWith({ id: "jev-latest" }, expect.objectContaining({
+      state: { task: "Summarize this\nbrief." },
+    }), { signal: expect.any(AbortSignal) });
+    expect(req).toMatchObject({ model, thinking, cwd: "/demo", context: "fresh", agent: "router-spike-worker", toolBudget: { hard: 0, block: "*" } });
+    for (const key of ["requestId", "ownerRunId", "nodeId"]) bus.emit(responseEvent, { ...req, [key]: "other" });
+    bus.emit(responseEvent, { ...req, status: "completed", result: { kind: "text", text: "done" } });
+  });
+  await run();
+  expect(bus.listenerCount(responseEvent)).toBe(0);
+  expect(notify).toHaveBeenCalledWith(`${route}: requested ${model} (${thinking}); effective ${model} (${thinking})\ndone`, "info");
+});
+
+test("shows usage and performs no work on malformed arguments", async () => {
+  const { notify, getAvailableOfType, run } = setup();
+  await run("incomplete");
+  expect(notify).toHaveBeenCalledWith(expect.stringContaining("Usage:"), "warning");
+  expect(getAvailableOfType).not.toHaveBeenCalled();
+});
+
+test("explains when classifier credentials or model are unavailable", async () => {
+  const { notify, getAvailableOfType, classify, run } = setup();
+  getAvailableOfType.mockResolvedValue([{ id: "other" }]);
+  await run();
+  expect(notify).toHaveBeenCalledWith(expect.stringContaining("not available"), "error");
+  expect(classify).not.toHaveBeenCalled();
+});
+
+test.each([
+  [{ stopReason: "error" }, "Classifier returned error"],
+  [{ stopReason: "stop", answers: {} }, "invalid route"],
+  [answer("invented"), "invalid route"],
+])("does not launch after bad classifier output", async (result, message) => {
+  const { bus, notify, classify, run } = setup();
+  const request = vi.fn();
+  bus.on(requestEvent, request);
+  classify.mockResolvedValue(result);
+  await run();
+  expect(request).not.toHaveBeenCalled();
+  expect(notify).toHaveBeenCalledWith(expect.stringContaining(message), "error");
+});
+
+test.each([
+  [{ status: "failed", error: "bad model" }, "bad model", "error"],
+  [{ status: "completed", result: undefined }, "did not return text", "error"],
+  [{ status: "completed", result: { kind: "text", text: "done" }, model: undefined, thinking: undefined }, "effective unknown (unknown)", "info"],
+])("reports response without inventing effective settings", async (response, message, level) => {
+  const { bus, notify, run } = setup();
+  bus.on(requestEvent, (req) => bus.emit(responseEvent, { ...req, ...response }));
+  await run();
+  expect(notify).toHaveBeenCalledWith(expect.stringContaining(message), level);
+});
+
+test("cancels the exact child and removes listeners on session shutdown", async () => {
+  const { bus, notify, run, shutdown } = setup();
+  const cancel = vi.fn();
+  bus.on(cancelEvent, cancel);
+  bus.on(requestEvent, ({ requestId, ownerRunId, nodeId }) => {
+    shutdown();
+    expect(cancel).toHaveBeenCalledWith({ requestId, ownerRunId, nodeId });
+  });
+  await run();
+  expect(bus.listenerCount(responseEvent)).toBe(0);
+  expect(notify).toHaveBeenCalledWith(expect.stringContaining("Child cancelled"), "error");
+});
+
+test("does not launch when shutdown precedes the classifier response", async () => {
+  const { bus, classify, notify, run, shutdown } = setup();
+  const request = vi.fn();
+  bus.on(requestEvent, request);
+  classify.mockImplementation(async () => { shutdown(); return answer("writing"); });
+  await run();
+  expect(request).not.toHaveBeenCalled();
+  expect(notify).toHaveBeenCalledWith(expect.stringContaining("AbortError"), "error");
+});
