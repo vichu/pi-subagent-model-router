@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "base_agent": { "model": "anthropic/claude-haiku-4-5", "thinking": "off" },
+  "routes": [
+    {
+      "name": "writer_task",
+      "label": "Writing task",
+      "model": "anthropic/claude-haiku-4-5",
+      "thinking": "off",
+      "when_to_use": "The deliverable is a draft or revision of prose, such as an article, newsletter, or document."
+    },
+    {
+      "name": "analysis_task",
+      "label": "Analysis task",
+      "model": "anthropic/claude-sonnet-4-6",
+      "thinking": "low",
+      "when_to_use": "The deliverable is an explanation, comparison, or evaluation based on given information."
+    }
+  ]
+}
