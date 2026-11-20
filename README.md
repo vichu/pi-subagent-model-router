@@ -2,7 +2,7 @@
 
 Config-driven prototype: route a task brief to a model and thinking level, then start a foreground `pi-subagents` worker with those settings. The prototype uses a tool-free worker and an explicit command; automatic delegation and base-agent orchestration are not implemented yet.
 
-## Try the integration spike
+## Setup
 
 Use Pi 1.5.2 and `pi-subagents` 0.89.1. From this checkout:
 
@@ -14,26 +14,11 @@ cp examples/router-spike-worker.md .pi/agents/
 pi -e ./src/index.ts
 ```
 
-Trust this checkout when prompted so `pi-subagents` can discover the project worker. Use the example worker as-is: the blank `tools:` field is intentional and gives the child no tools.
+Trust this checkout when prompted so `pi-subagents` can discover the generic tool-free worker. Its blank `tools:` field is intentional. It is a launcher requirement, not a routing persona; all routes use the same worker.
 
-In Pi, try either of these commands. Replace the model IDs with provider-qualified IDs available to your Pi session:
+## Configure routing
 
-```text
-/router-spike typesafe/jev-latest anthropic/claude-haiku-4-5 anthropic/claude-sonnet-4-6 Write a one-sentence garden newsletter announcement about rosemary.
-/router-spike typesafe/jev-latest anthropic/claude-haiku-4-5 anthropic/claude-sonnet-4-6 Analyze why splitting a two-hour task between two people may not finish in one hour.
-```
-
-The prototype uses `off` for writing and `low` for analysis. It prints the route, requested settings, effective settings reported by the child, and the child's response. Use `openai/gpt-6-luna` to explicitly try the Decisions API if it is available to Pi with an OpenAI API key (ChatGPT sign-in does not support that API). The command sends the task brief and built-in rubric to the selected classifier and the task brief to the selected worker provider. Do not include secrets or sensitive data in smoke-test briefs.
-
-## Try your routing matrix
-
-After the setup above (or `/reload` if the extension is already linked), run this from the repo in Pi:
-
-```text
-/router-run examples/router.json | Write one sentence about rosemary.
-```
-
-From another directory, use the config path relative to that directory or an absolute path. Start with [`examples/router.json`](examples/router.json) and change the model IDs to ones available in your Pi session.
+Edit the repo’s [`router.json`](router.json). It is the only routing config: `/router-run` reads it from the extension’s checkout on every invocation, regardless of Pi’s working directory. No config path or persona is selected at runtime. Use provider-qualified model IDs available in your Pi session. OpenAI’s Decisions API requires an API key; ChatGPT sign-in does not support it.
 
 | Field | Meaning |
 | --- | --- |
@@ -49,7 +34,7 @@ The classifier receives the brief, route names, labels, and criteria—not worke
 
 ## Validate software-engineering routes
 
-[`examples/software-engineering.json`](examples/software-engineering.json) has nine routes. From the repo, run `/router-run examples/software-engineering.json | <brief>` with a brief below. If Pi is open one directory above the repo, use `pi-subagent-model-router/examples/software-engineering.json`. These are text-only checks: the worker can discuss the brief or return a sketch, but cannot inspect or edit files.
+[`router.json`](router.json) starts with nine engineering task categories. After setup (or `/reload` if already linked), run `/router-run <brief>` with a brief below. These are text-only checks: the worker can discuss the brief or return a sketch, but cannot inspect or edit files.
 
 | Sample brief | Expected route |
 | --- | --- |

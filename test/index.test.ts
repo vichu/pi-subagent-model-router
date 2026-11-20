@@ -4,17 +4,22 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import type { SubagentDelegationRequest } from "pi-subagents/delegation";
 import { expect, test, vi } from "vitest";
 import { runEntryType } from "../src/history.ts";
-import routerSpike from "../src/index.ts";
+import registerRouter from "../src/index.ts";
 
 vi.mock("node:fs/promises", () => ({ readFile: vi.fn() }));
 
 const requestEvent = "prompt-template:subagent:request";
 const responseEvent = "prompt-template:subagent:response";
 const cancelEvent = "prompt-template:subagent:cancel";
-const args = "typesafe/jev-latest demo/writer demo/analyst Summarize this\nbrief.";
-const answer = (choice: string) => ({ stopReason: "stop", answers: { route: { type: "choice", choice } } });
+const args = "Summarize this\nbrief.";
+const routes = [
+  { name: "writing", label: "Writing", when_to_use: "Draft prose", model: "demo/writer", thinking: "off" },
+  { name: "analysis", label: "Analysis", when_to_use: "Analyze a topic", model: "demo/analyst", thinking: "low" },
+];
+const answer = (choice: string) => ({ stopReason: "stop", answers: { fits: { type: "bool", probability: 1 }, route: { type: "choice", choice } } });
 
 function setup() {
+  vi.mocked(readFile).mockReset().mockResolvedValue(JSON.stringify({ version: 1, routes }));
   const bus = new EventEmitter();
   const notify = vi.fn();
   const getAvailableOfType = vi.fn().mockResolvedValue([{ id: "jev-latest" }]);
@@ -23,7 +28,7 @@ function setup() {
   const registerCommand = vi.fn();
   const entries: unknown[] = [{ type: "message" }, { type: "custom", customType: "other" }, { type: "custom", customType: runEntryType }];
   const appendEntry = vi.fn((customType, data) => entries.push({ type: "custom", customType, data }));
-  routerSpike({ on, registerCommand, appendEntry, getThinkingLevel: () => "off", events: {
+  registerRouter({ on, registerCommand, appendEntry, getThinkingLevel: () => "off", events: {
     emit: bus.emit.bind(bus),
     on: (event: string, listener: (data: unknown) => void) => {
       bus.on(event, listener);
@@ -32,7 +37,7 @@ function setup() {
   } } as unknown as ExtensionAPI);
   const getHandler = (name: string) => registerCommand.mock.calls.find(([key]) => key === name)?.[1].handler as (input: string, ctx: ExtensionCommandContext) => Promise<void>;
   const ctx = { cwd: "/demo", ui: { notify }, sessionManager: { getBranch: () => entries }, modelRegistry: { getAvailableOfType, classify, find: vi.fn().mockReturnValue({}), hasConfiguredAuth: () => true } } as unknown as ExtensionCommandContext;
-  return { bus, notify, appendEntry, getAvailableOfType, classify, history: () => getHandler("router-history")("", ctx), run: (input = args) => getHandler("router-spike")(input, ctx), runConfig: (input: string, model = ctx.model) => getHandler("router-run")(input, { ...ctx, model }), shutdown: () => on.mock.calls[0][1]() };
+  return { bus, notify, appendEntry, getAvailableOfType, classify, history: () => getHandler("router-history")("", ctx), run: (input = args, model = ctx.model) => getHandler("router-run")(input, { ...ctx, model }), shutdown: () => on.mock.calls[0][1]() };
 }
 
 test.each([
@@ -43,13 +48,14 @@ test.each([
   classify.mockResolvedValue(answer(route));
   bus.on(requestEvent, (req: SubagentDelegationRequest) => {
     expect(classify).toHaveBeenCalledWith({ id: "jev-latest" }, expect.objectContaining({
-      state: { task: "Summarize this\nbrief." },
+      state: { task: args, routes: { writing: "Writing: Draft prose", analysis: "Analysis: Analyze a topic" } },
     }), { signal: expect.any(AbortSignal) });
     expect(req).toMatchObject({ model, thinking, cwd: "/demo", context: "fresh", agent: "router-spike-worker", toolBudget: { hard: 0, block: "*" } });
     for (const key of ["requestId", "ownerRunId", "nodeId"]) bus.emit(responseEvent, { ...req, [key]: "other" });
     bus.emit(responseEvent, { ...req, status: "completed", result: { kind: "text", text: "done" } });
   });
   await run();
+  expect(vi.mocked(readFile).mock.calls[0][0]).toEqual(new URL("../router.json", import.meta.url));
   expect(bus.listenerCount(responseEvent)).toBe(0);
   expect(notify).toHaveBeenCalledWith(`${route}: requested ${model} (${thinking}); effective ${model} (${thinking})\ndone`, "info");
 });
@@ -73,33 +79,12 @@ test("keeps rejected requests distinct from confirmed launches", async () => {
   expect(notify).toHaveBeenLastCalledWith(expect.stringMatching(/invalid_request[\s\S]*effective: unknown \(unknown\)[\s\S]*unconfirmed/), "info");
 });
 
-test("shows usage and performs no work on malformed arguments", async () => {
+test("shows usage without reading config or classifying an empty brief", async () => {
   const { notify, getAvailableOfType, run } = setup();
-  await run("incomplete");
-  expect(notify).toHaveBeenCalledWith(expect.stringContaining("Usage:"), "warning");
+  await run("   ");
+  expect(notify).toHaveBeenCalledWith("Usage: /router-run <brief>", "warning");
+  expect(readFile).not.toHaveBeenCalled();
   expect(getAvailableOfType).not.toHaveBeenCalled();
-});
-
-test("explains when classifier credentials or model are unavailable", async () => {
-  const { notify, getAvailableOfType, classify, run } = setup();
-  getAvailableOfType.mockResolvedValue([{ id: "other" }]);
-  await run();
-  expect(notify).toHaveBeenCalledWith(expect.stringContaining("not available"), "error");
-  expect(classify).not.toHaveBeenCalled();
-});
-
-test.each([
-  [{ stopReason: "error" }, "Classifier returned error"],
-  [{ stopReason: "stop", answers: {} }, "invalid route"],
-  [answer("invented"), "invalid route"],
-])("does not launch after bad classifier output", async (result, message) => {
-  const { bus, notify, classify, run } = setup();
-  const request = vi.fn();
-  bus.on(requestEvent, request);
-  classify.mockResolvedValue(result);
-  await run();
-  expect(request).not.toHaveBeenCalled();
-  expect(notify).toHaveBeenCalledWith(expect.stringContaining(message), "error");
 });
 
 test.each([
@@ -128,21 +113,15 @@ test("cancels the exact child and removes listeners on session shutdown", async 
   expect(notify).toHaveBeenLastCalledWith(expect.stringMatching(/submitted[\s\S]*unconfirmed/), "info");
 });
 
-test.each(["missing separator", " | brief", "config.json | "])("shows config command usage for %s", async (input) => {
-  const { notify, runConfig } = setup();
-  await runConfig(input);
-  expect(notify).toHaveBeenCalledWith(expect.stringContaining("Usage: /router-run"), "warning");
-});
-
 test("reports unreadable config", async () => {
-  const { notify, runConfig } = setup();
+  const { notify, run } = setup();
   vi.mocked(readFile).mockRejectedValueOnce(new Error("file not found"));
-  await runConfig("missing.json | brief");
+  await run();
   expect(notify).toHaveBeenCalledWith(expect.stringContaining("file not found"), "error");
 });
 
 test("launches using the selected config route, without a base warning", async () => {
-  const { bus, notify, classify, runConfig } = setup();
+  const { bus, notify, classify, run } = setup();
   const row = { model: "demo/writer", thinking: "high", name: "writing", label: "Writing", when_to_use: "Draft prose" };
   vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes: [row] }));
   classify.mockResolvedValue({ stopReason: "stop", answers: { fits: { type: "bool", probability: 0.9 } } });
@@ -150,19 +129,19 @@ test("launches using the selected config route, without a base warning", async (
     expect(req).toMatchObject({ model: row.model, thinking: row.thinking, task: "Draft a note" });
     bus.emit(responseEvent, { ...req, status: "completed", result: { kind: "text", text: "done" } });
   });
-  await runConfig("config.json | Draft a note");
+  await run("Draft a note");
   expect(notify).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("writing: requested demo/writer (high)"), "info");
 });
 
 test("warns once when using the base model and records both attempts", async () => {
-  const { bus, notify, runConfig, history } = setup();
+  const { bus, notify, run, history } = setup();
   const worker = { model: "demo/writer", thinking: "off" };
   const routes = [{ ...worker, name: "writing", label: "Writing", when_to_use: "Draft prose" }];
   vi.mocked(readFile).mockResolvedValue(JSON.stringify({ version: 1, classifiers: [], routes }));
   bus.on(requestEvent, (req) => bus.emit(responseEvent, { ...req, status: "completed", result: { kind: "text", text: "done" } }));
   const base = { provider: "demo", id: "base" } as ExtensionCommandContext["model"];
-  await runConfig("config.json | Draft a note", base);
-  await runConfig("config.json | Draft a note", base);
+  await run("Draft a note", base);
+  await run("Draft a note", base);
   expect(notify.mock.calls.filter(([, level]) => level === "warning")).toHaveLength(1);
   expect(notify).toHaveBeenCalledWith(expect.stringContaining("base fallback: requested demo/base (off)"), "info");
   await history();
