@@ -98,3 +98,36 @@ npm test
 ```
 
 Tests mock the model registry and delegation events. The coverage gate requires 100% of statements, branches, functions, and lines for each runtime source file. Live checks require provider credentials and are separate from the unit suite.
+
+## Releasing to npm
+
+### One-time setup
+
+An npm package maintainer configures [trusted publishing](https://docs.npmjs.com/trusted-publishers/) in the existing [`pi-subagent-model-router` package settings](https://www.npmjs.com/package/pi-subagent-model-router/access) on npmjs.com. Select **GitHub Actions** and enter these exact values:
+
+| Setting | Value |
+| --- | --- |
+| Organization or user | `vichu` |
+| Repository | `pi-subagent-model-router` |
+| Workflow filename | `release.yml` (filename only; the file is [`.github/workflows/release.yml`](.github/workflows/release.yml)) |
+| Environment name | Leave blank |
+| Allowed actions | Allow `npm publish`; `npm dist-tag` is not needed |
+
+Configure this when the first automated release is ready: npm requires a first successful publish within two days of creating the connection. The package must already exist to configure its trusted publisher; this package is already on npm. If bootstrapping a different package, publish its first version manually with an npm account authorized to publish, satisfying npm's interactive 2FA requirements, then configure OIDC. After verifying trusted publishing, npm recommends **Require two-factor authentication and disallow tokens** for the package; this does not block OIDC. No npm token or GitHub Actions secret is needed. Restrict creation, updates, and deletion of `v*` tags to release maintainers with a GitHub tag ruleset: GitHub runs the workflow from the tagged revision, so permission to create release tags must be trusted.
+
+### Release steps
+
+1. Open a version PR with a new stable `MAJOR.MINOR.PATCH` in both `package.json` and `package-lock.json`. On the PR branch, `npm version <version> --no-git-tag-version` can update both without creating a commit or tag. Review any versioned install examples. Merge the PR into `main`; merging alone does not publish or bump a version.
+2. Fetch `main` and deliberately tag the **merged commit on `main`** (not the PR branch tip). Replace the placeholders, and stop if the ancestry check fails:
+
+   ```sh
+   git fetch origin main
+   version=MAJOR.MINOR.PATCH
+   release_commit=MERGED_COMMIT_SHA
+   git merge-base --is-ancestor "$release_commit" origin/main &&
+     git tag -a "v$version" "$release_commit" -m "Release v$version" &&
+     git push origin "refs/tags/v$version"
+   ```
+
+3. Watch **Publish npm release** in GitHub Actions. The tag must be annotated, match the version in the committed manifest and lockfile exactly, and point to a commit reachable from `origin/main`. The validation job runs `npm ci`, typechecking, tests, and an `npm pack` dry-run without OIDC. A separate GitHub-hosted job publishes from a fresh checkout of that same commit with OIDC. Packing and publishing disable lifecycle scripts; this package ships source and does not need a build hook. The workflow pins Node 24.22.3 (bundled npm 11.19.1 for publishing). Only `npm ci` uses npm 11.6.2 for compatibility with the current lockfile. npm trusted publishing requires Node 22.14.0+ and npm 11.5.1+ and does not support self-hosted runners.
+4. Verify with `npm view "pi-subagent-model-router@$version" version dist.integrity` and check the package page for provenance. You can create a GitHub Release from the tag for release notes, but it is optional and does not trigger publishing.
