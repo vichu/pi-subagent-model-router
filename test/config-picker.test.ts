@@ -11,7 +11,7 @@ function setup() {
   const ui = { custom: vi.fn((factory) => {
     component = factory({ requestRender }, { fg: (_color: string, text: string) => text, bold: style }, getKeybindings(), done);
   }) } as unknown as ExtensionCommandContext["ui"];
-  return { done, requestRender, ctx: { mode: "tui", ui } as const, component: () => component };
+  return { done, requestRender, custom: vi.mocked(ui.custom), ctx: { mode: "tui", ui } as const, component: () => component };
 }
 
 const rows = [
@@ -20,8 +20,12 @@ const rows = [
 ];
 
 test("renders a bounded rubric preview, follows selection, and selects a route", () => {
-  const { ctx, component, requestRender, done } = setup();
+  const { ctx, component, requestRender, done, custom } = setup();
   pickConfigItem(ctx, "Subagent router · rubric", rows, { hint: "2 routes", current: "review" });
+  expect(custom).toHaveBeenCalledWith(expect.any(Function), {
+    overlay: false,
+    blocked: { kind: "question", message: "Subagent router · rubric" },
+  });
   const view = component();
   expect(view.render(70).join("\n")).toContain("Inspect existing changes.");
   view.handleInput!("\x1b[A");

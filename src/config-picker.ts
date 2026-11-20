@@ -64,5 +64,5 @@ export function pickConfigItem(ctx: PickerContext, title: string, items: PickerI
         tui.requestRender();
       },
     };
-  }, { overlay: true, overlayOptions: { width: "90%", maxHeight: "95%", margin: 1 }, blocked: { kind: "question", message: title } });
+  }, { overlay: false, blocked: { kind: "question", message: title } });
 }

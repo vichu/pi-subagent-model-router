@@ -18,7 +18,7 @@ Trust this checkout when prompted so `pi-subagents` can discover the generic too
 
 ## Configure routing
 
-Run `/subagent-router-config` in Pi to browse the rubric without editing JSON. Use ↑/↓ to preview a route’s criteria, model, and thinking level; press Enter to edit and Esc to back out. In the model dropdown, type to filter Pi’s available chat models by name, provider, or ID. The thinking dropdown shows the levels supported by the selected model.
+Run `/subagent-router-config` in Pi to browse the rubric without editing JSON. The rubric, pickers, and edit controls open inline in the editor area at the bottom, not over the conversation. Use ↑/↓ to preview a route’s criteria, model, and thinking level; press Enter to edit and Esc to back out. In the model dropdown, type to filter Pi’s available chat models by name, provider, or ID. The thinking dropdown shows the levels supported by the selected model.
 
 The same menu can add or remove routes, reorder classifiers, and set or clear the base and routing models. Select **When to use** to view or edit the full criteria. Each change is validated and requires save confirmation.
 
