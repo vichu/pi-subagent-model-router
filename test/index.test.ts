@@ -336,7 +336,8 @@ test("persists reconciled child pricing after delegation and attributes it in th
       ...req, status: "completed", runId, model: "demo/real", usage: { ...counters, cost: 4.5, turns: 1 }, result: { kind: "text", text: "private output" },
     }));
     await run(args, undefined, { find: vi.fn().mockReturnValue({ cost }) });
-    expect(appendEntry.mock.lastCall?.[1].costEvidence).toEqual({ models: [{ model: "demo/real", usage: { ...counters, cost: 4.5 }, rates: cost }] });
+    expect(appendEntry.mock.lastCall?.[1].costAccounting).toEqual({ version: 1, evidence: { models: [{ model: "demo/real", usage: { ...counters, cost: 4.5 }, rates: cost }] } });
+    await rm(child);
     expect(JSON.stringify(appendEntry.mock.calls)).not.toMatch(/Summarize this|private output/);
     select.mockResolvedValueOnce("Cost dashboard");
     await open();
@@ -345,6 +346,30 @@ test("persists reconciled child pricing after delegation and attributes it in th
   } finally {
     discover.mockRestore();
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("shows new reported spend and tokens when the child session file is unavailable", async () => {
+  const discover = vi.spyOn(SessionManager, "listAll").mockResolvedValue([]);
+  try {
+    const { bus, open, run, select, appendEntry } = setup();
+    const usage = { input: 10, output: 12, cacheRead: 0, cacheWrite: 2, cost: 0.003 };
+    bus.on(requestEvent, (req) => bus.emit(responseEvent, {
+      ...req, status: "completed", runId: "12345678-abcd-4567-abcd-123456789012", model: "demo/writer", usage,
+      result: { kind: "text", text: "done" },
+    }));
+    await run();
+    expect(appendEntry.mock.lastCall?.[1]).toMatchObject({ usage, costAccounting: { version: 1, evidence: undefined } });
+    select.mockResolvedValueOnce("Cost dashboard");
+    await open();
+    const report = select.mock.calls.at(-2)?.[0];
+    expect(report).toContain("Pi-reported spend (collected workers only): $0.0030000");
+    expect(report).toContain("Tokens (collected workers): 10 input / 12 output / 0 cache read / 2 cache write");
+    expect(report).toContain("Unattributed workers: $0.0030000 Pi-reported");
+    expect(report).toContain("Savings unavailable");
+    expect(report).not.toContain("demo/writer");
+  } finally {
+    discover.mockRestore();
   }
 });
 

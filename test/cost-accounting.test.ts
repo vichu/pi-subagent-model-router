@@ -53,8 +53,8 @@ const receipt = (key: string, requestId: string, status: string, extra: Record<s
 }) as SessionEntry;
 const session = (key: string, ...entries: SessionEntry[]) => ({ key, timestamp: "2026-01-01T00:00:00Z", entries });
 const modelEvidence = (model: string, usage: RunUsage, pricing?: Rates) => ({ models: [{ model, usage, rates: pricing }] });
-const done = (key: string, request: string, usage: RunUsage | undefined, evidence?: CostEvidence, runId: string | undefined = request, status = "completed") => [
-  receipt(key, request, "submitted"), receipt(key, request, status, { runId, usage, costEvidence: evidence }),
+const done = (key: string, request: string, usage: RunUsage | undefined, evidence?: CostEvidence, runId: string | undefined = request, status = "completed", legacy = false) => [
+  receipt(key, request, "submitted"), receipt(key, request, status, { runId, usage, ...(legacy ? { costEvidence: evidence } : { costAccounting: { version: 1, evidence } }) }),
 ];
 
 test("summarizeCosts compares the common session mix, including cache, and averages only eligible sessions", () => {
@@ -65,14 +65,14 @@ test("summarizeCosts compares the common session mix, including cache, and avera
     session("a", ...done("a", "1", first, modelEvidence("d/a", first, rates)), ...done("a", "2", second, modelEvidence("d/b", second, secondRates)),
       receipt("a", "reject", "submitted"), receipt("a", "reject", "invalid_request")),
     session("b", ...done("b", "3", spend(11), modelEvidence("d/a", spend(11), rates))),
-    session("c", ...done("c", "4", spend(5))),
+    session("c", ...done("c", "4", spend(5), modelEvidence("d/a", spend(5), rates), "4", "completed", true)),
   ];
   const result = summarizeCosts(sessions);
   expect(result).toMatchObject({ eligible: 2, overall: 5, average: 2.5 });
-  expect(result.rows[0]).toMatchObject({ savings: 6, baseline: { model: "d/b", cost: 18 }, verifiedSpend: 12, rejected: 1, attribution: [{ model: "d/a", usage: first }, { model: "d/b", usage: second }] });
+  expect(result.rows[0]).toMatchObject({ savings: 6, baseline: { model: "d/b", cost: 18 }, total: { cost: 12 }, rejected: 1, attribution: [{ model: "d/a", usage: first }, { model: "d/b", usage: second }] });
   expect(result.rows[1].savings).toBe(-1);
   expect(summarizeCosts([session("a", ...sessions[0].entries.slice(2, 4), ...sessions[0].entries.slice(0, 2))]).rows[0].baseline?.model).toBe("d/b");
-  expect(result.rows[2]).toMatchObject({ observed: 1, savings: undefined, verifiedSpend: undefined });
+  expect(result.rows[2]).toMatchObject({ legacy: 1, savings: undefined, total: undefined });
 });
 
 test("summarizeCosts deduplicates resumed copies, ignores inherited receipts, and rejects ambiguous request and run IDs", () => {
@@ -80,7 +80,7 @@ test("summarizeCosts deduplicates resumed copies, ignores inherited receipts, an
   const entries = done("origin", "r", bill, modelEvidence("d/a", bill, rates));
   const origin = session("origin", { type: "custom", customType: "other" } as SessionEntry, { type: "custom", customType: runEntryType } as SessionEntry,
     receipt("origin", "", "submitted"), ...entries);
-  expect(summarizeCosts([origin, session("fork", ...entries), session("origin", ...entries)])).toMatchObject({ rows: [{ key: "origin", verified: 1 }], eligible: 1, overall: 0 });
+  expect(summarizeCosts([origin, session("fork", ...entries), session("origin", ...entries)])).toMatchObject({ rows: [{ key: "origin", collected: 1 }], eligible: 1, overall: 0 });
   for (const other of [session("duplicate-request", ...done("duplicate-request", "r", bill)), session("duplicate-run", ...done("duplicate-run", "different", bill, undefined, "r")),
     session("origin", receipt("origin", "r", "completed", {}, "another-entry-id"))]) {
     expect(summarizeCosts([origin, other])).toMatchObject({ rows: [{ unresolved: 1 }, ...(other.key === "origin" ? [] : [{ unresolved: 1 }])], overall: undefined, average: undefined, eligible: 0 });
@@ -98,5 +98,24 @@ test("summarizeCosts excludes sessions with partial evidence, invalid pricing, o
     done("a", "negative", bill, modelEvidence("d/a", spend(-1), rates))]) {
     expect(summarizeCosts([session("a", ...verified, ...entries)])).toMatchObject({ overall: undefined, average: undefined, rows: [{ baseline: undefined, savings: undefined }] });
   }
-  expect(summarizeCosts([session("a", ...done("a", "zero", spend(0)))]).rows[0]).toMatchObject({ observed: 1, verifiedSpend: undefined });
+  expect(summarizeCosts([session("a", ...done("a", "zero", spend(0)))]).rows[0]).toMatchObject({ collected: 1, total: spend(0), unattributed: spend(0), savings: undefined });
+});
+
+test("summarizeCosts uses wire totals for new receipts, including unattributed and unsuccessful workers", () => {
+  const observed = spend(10);
+  const wire = spend(10.00000000001);
+  const known = done("a", "known", wire, modelEvidence("d/a", observed, rates));
+  const [priced] = summarizeCosts([session("a", ...known)]).rows;
+  expect(priced).toMatchObject({ total: wire, attribution: [{ usage: observed }] });
+  const legacy = done("a", "legacy", observed, modelEvidence("d/a", observed, rates), "legacy", "completed", true);
+  expect(summarizeCosts([session("a", ...known, ...legacy)]).rows[0]).toMatchObject({
+    collected: 1, legacy: 1, total: wire, savings: undefined,
+  });
+  const unknown = done("a", "missing-file", spend(3));
+  const failed = done("a", "failed", spend(7), modelEvidence("d/a", spend(7), rates), "failed", "failed");
+  expect(summarizeCosts([session("a", ...known, ...unknown, ...failed)]).rows[0]).toMatchObject({
+    collected: 3, total: { ...wire, input: 3e6, output: 3e6, cacheRead: 3e6, cacheWrite: 3e6, cost: wire.cost + 10 },
+    unattributed: { ...wire, input: 2e6, output: 2e6, cacheRead: 2e6, cacheWrite: 2e6, cost: 10 },
+    attribution: [{ model: "d/a", usage: observed }], savings: undefined,
+  });
 });
