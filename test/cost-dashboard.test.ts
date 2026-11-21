@@ -13,6 +13,7 @@ vi.mock("../src/config-picker.ts", () => ({ pickConfigItem: vi.fn() }));
 const fixtures: string[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.mocked(open).mockClear();
   vi.mocked(pickConfigItem).mockReset();
   await Promise.all(fixtures.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
@@ -29,7 +30,7 @@ const rates = { input: 2, output: 4, cacheRead: 1, cacheWrite: 3 };
 const usage = { input: 1e6, output: 1e6, cacheRead: 1e6, cacheWrite: 1e6, cost: 11 };
 const makeReceipts = (sessionId: string, verified: boolean) => ["submitted", "completed"].map((status) => ({
   type: "custom", customType: runEntryType, id: status, data: { requestId: sessionId, sessionKey: key(sessionId), status,
-    ...(status === "completed" ? { usage, runId: `${sessionId}-run`, costEvidence: verified ? { models: [{ model: "demo/used", usage, rates }] } : undefined } : {}) },
+    ...(status === "completed" ? { usage, runId: `${sessionId}-run`, costAccounting: verified ? { version: 1, evidence: { models: [{ model: "demo/used", usage, rates }] } } : undefined } : {}) },
 }));
 test("showCostDashboard does not count a file truncated during the read", async () => {
   const path = "/truncated.jsonl";
@@ -63,13 +64,17 @@ test("captureChildCost reads and reconciles the 0.89.1 default fresh child file 
   expect(await captureChildCost(ctx, parent, { ...response, status: "failed" })).toBeUndefined();
   expect(await captureChildCost(ctx, parent, { ...response, usage: undefined })).toBeUndefined();
   expect(await captureChildCost(ctx, parent, { ...response, runId: "../other" })).toBeUndefined();
+  expect(await captureChildCost(ctx, parent, { ...response, runId: "-".repeat(36) })).toBeUndefined();
+  expect(open).not.toHaveBeenCalled();
   expect(await captureChildCost(ctx, parent, { ...response, runId: undefined })).toBeUndefined();
   expect(await captureChildCost(ctx, parent, response)).toBeUndefined();
   await mkdir(dirname(child), { recursive: true });
   await writeSession(child, header("child"), { type: "message", message: { role: "assistant", provider: "demo", model: "used", stopReason: "stop", content: [{ text: "private" }],
     usage: { ...usage, totalTokens: 4e6, cost: { ...rates, total: 11, totalFromProvider: true } },
   } });
+  vi.mocked(open).mockClear();
   expect(await captureChildCost(ctx, parent, response)).toEqual({ models: [{ model: "demo/used", usage, rates }] });
+  expect(open).toHaveBeenCalledExactlyOnceWith(child, "r");
   expect(find).toHaveBeenCalledExactlyOnceWith("demo", "used");
 });
 
@@ -83,20 +88,21 @@ test("showCostDashboard scans saved files, reports exclusions and shows historic
   await writeSession(badTimestamp, { ...header("time"), timestamp: undefined });
   await writeFile(oversized, Buffer.alloc(8 * 1024 * 1024 + 1));
   const [submitted, completed] = makeReceipts("unpriced", true);
-  completed.data.costEvidence!.models[0].rates = {} as typeof rates;
+  completed.data.costAccounting!.evidence.models[0].rates = {} as typeof rates;
   await writeSession(unpriced, header("unpriced"), submitted, completed);
   list(current, saved, malformed, invalidEntry, oversized, missing, badId, badTimestamp, unpriced);
-  const { ctx, select } = fixture("current", current);
+  const { ctx, select, find } = fixture("current", current);
   await showCostDashboard(ctx, new AbortController().signal);
   const [report] = select.mock.calls[0];
-  expect(report).toContain("Router-launched direct workers only");
+  expect(report).toContain("Forward-only · router-launched direct workers");
   expect(report).toContain("Estimated savings: −$1.0000 across 1/3 recorded sessions");
   expect(report).toContain("Average per eligible session: −$1.0000");
   expect(report).toContain("2 other files read / 6 skipped / 9 listed");
   expect(report).toContain("demo/used: $11.000 Pi-reported");
-  expect(report).toContain("Pi spend (reconciled workers only): unknown");
+  expect(report).toContain("Pi-reported spend (collected workers only): unknown");
   expect(report).toContain("Savings unavailable");
   expect(report).toContain("rates unavailable or inconsistent");
+  expect(find).not.toHaveBeenCalled();
 });
 
 test("showCostDashboard handles unavailable discovery or identity and dismisses when aborted", async () => {

@@ -107,7 +107,8 @@ export function summarizeCosts(sessions: CostSession[]) {
     if (!requests.size) return [];
     const total = emptyUsage();
     const models = new Map<string, CostModel>();
-    let rejected = 0, unresolved = 0, observed = 0, verified = 0;
+    const unattributed = emptyUsage();
+    let rejected = 0, unresolved = 0, legacy = 0, collected = 0, unattributedCount = 0;
     for (const [id, receipts] of requests) {
       const terminal = receipts.find(({ status }) => status !== "submitted");
       if (receipts.length !== 2 || receipts.filter(({ status }) => status === "submitted").length !== 1 || !terminal || owners.get(id)!.size !== 1) {
@@ -123,26 +124,32 @@ export function summarizeCosts(sessions: CostSession[]) {
         unresolved++;
         continue;
       }
-      const evidence = terminal.status === "completed" ? verifiedModels(terminal.costEvidence, usage) : undefined;
-      if (!evidence) {
-        observed++;
+      if (terminal.costAccounting?.version !== 1) {
+        legacy++;
         continue;
       }
-      verified++;
+      collected++;
+      add(total, usage);
+      const evidence = terminal.status === "completed" ? verifiedModels(terminal.costAccounting.evidence, usage) : undefined;
+      if (!evidence) {
+        unattributedCount++;
+        add(unattributed, usage);
+        continue;
+      }
       for (const model of evidence) {
         const row = models.get(model.model) ?? { ...model, usage: emptyUsage() };
         if (!model.rates || !row.rates || !sameRates(model.rates, row.rates)) row.rates = undefined;
         add(row.usage, model.usage);
-        add(total, model.usage);
         models.set(model.model, row);
       }
     }
     const attribution = [...models.values()];
     const prices = attribution.map(({ model, rates }) => ({ model, cost: rates ? price(total, rates) : NaN }));
-    const eligible = verified > 0 && !observed && !unresolved && prices.length > 0 && prices.every(({ cost }) => Number.isFinite(cost));
+    const eligible = collected > 0 && !legacy && !unresolved && !unattributedCount && prices.every(({ cost }) => Number.isFinite(cost));
     const baseline = eligible ? prices.reduce((highest, candidate) => candidate.cost > highest.cost ? candidate : highest) : undefined;
-    return [{ key, timestamp, requests: requests.size, rejected, unresolved, observed,
-      verified, verifiedSpend: verified ? total.cost : undefined, attribution, baseline, savings: baseline && baseline.cost - total.cost }];
+    return [{ key, timestamp, requests: requests.size, rejected, unresolved, legacy, collected,
+      total: collected ? total : undefined, unattributed: unattributedCount ? unattributed : undefined,
+      attribution, baseline, savings: baseline && baseline.cost - total.cost }];
   });
   const eligible = rows.flatMap(({ savings }) => savings === undefined ? [] : [savings]);
   const overall = eligible.length ? eligible.reduce((sum, savings) => sum + savings, 0) : undefined;

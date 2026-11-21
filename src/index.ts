@@ -100,10 +100,11 @@ export default function router(pi: ExtensionAPI) {
       intercomBridge: { mode: "off" },
       result: { kind: "text" },
     }, signal, onProgress);
+    const usage = response.status !== "invalid_request" && sessionKey && response.runId ? reportedRunUsage(response.usage) : undefined;
     const effective = response.status === "invalid_request" ? {} : {
       runId: response.runId, model: response.model, thinking: response.thinking,
-      usage: sessionKey && response.runId ? reportedRunUsage(response.usage) : undefined,
-      costEvidence: await captureChildCost(ctx, parentFile, response),
+      usage,
+      costAccounting: usage ? { version: 1 as const, evidence: await captureChildCost(ctx, parentFile, response) } : undefined,
     };
     if (sessionKey === runSessionKey(ctx.sessionManager)) {
       pi.appendEntry<RunReceipt>(runEntryType, { ...receipt, ...effective, status: response.status });

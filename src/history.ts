@@ -18,7 +18,8 @@ export type RunReceipt = {
   model?: string;
   thinking?: string;
   usage?: RunUsage;
-  costEvidence?: CostEvidence;
+  // Marks forward-only accounting even when child attribution is unavailable.
+  costAccounting?: { version: 1; evidence?: CostEvidence };
 };
 
 export type RunUsage = Pick<SubagentDelegationUsage, "input" | "output" | "cacheRead" | "cacheWrite" | "cost">;
