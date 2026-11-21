@@ -1,6 +1,7 @@
 import type { ExtensionCommandContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { SubagentDelegationUsage } from "pi-subagents/delegation";
 import { pickConfigItem } from "./config-picker.ts";
+import type { CostEvidence } from "./cost-accounting.ts";
 import type { ModelChoice } from "./config.ts";
 
 export const runEntryType = "pi-subagent-model-router:run:v1";
@@ -17,9 +18,10 @@ export type RunReceipt = {
   model?: string;
   thinking?: string;
   usage?: RunUsage;
+  costEvidence?: CostEvidence;
 };
 
-type RunUsage = Pick<SubagentDelegationUsage, "input" | "output" | "cacheRead" | "cacheWrite" | "cost">;
+export type RunUsage = Pick<SubagentDelegationUsage, "input" | "output" | "cacheRead" | "cacheWrite" | "cost">;
 
 export function reportedRunUsage(usage: RunUsage | undefined): RunUsage | undefined {
   if (!usage) return undefined;
@@ -81,7 +83,7 @@ export async function showHistory(ctx: ExtensionCommandContext) {
   const scope = observations
     ? `Router requests with usage observations (whole session): ${observations.size}`
     : "Router usage observations unavailable: unidentified Pi session.";
-  const limitations = "Totals and savings unavailable. Reported usage may be partial; ? means unknown.";
+  const limitations = "Totals and savings unavailable here; see Cost dashboard. Reported usage may be partial; ? means unknown.";
   const latest = new Map(runReceipts(ctx.sessionManager.getBranch()).map((entry) => [entry.receipt.requestId, entry]));
   const rows = [...latest.values()].reverse().map(({ id, receipt: run }) => ({
     value: run.requestId,

@@ -1,12 +1,14 @@
 import { EventEmitter } from "node:events";
-import { readFile } from "node:fs/promises";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { SessionManager, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { SubagentDelegationRequest } from "pi-subagents/delegation";
 import { expect, test, vi } from "vitest";
 import { runEntryType } from "../src/history.ts";
 import registerRouter from "../src/index.ts";
 
-vi.mock("node:fs/promises", () => ({ readFile: vi.fn() }));
+vi.mock("node:fs/promises", async (original) => ({ ...await original<typeof import("node:fs/promises")>(), readFile: vi.fn() }));
 
 const requestEvent = "prompt-template:subagent:request";
 const responseEvent = "prompt-template:subagent:response";
@@ -19,7 +21,7 @@ const routes = [
 ];
 const answer = (choice: string) => ({ stopReason: "stop", answers: { fits: { type: "bool", probability: 1 }, route: { type: "choice", choice } } });
 
-function setup() {
+function setup(parentFile: string | null = null) {
   vi.mocked(readFile).mockReset().mockResolvedValue(JSON.stringify({ version: 1, routes }));
   const bus = new EventEmitter();
   const notify = vi.fn();
@@ -45,17 +47,17 @@ function setup() {
   const handler = registerCommand.mock.calls[0][1].handler as (input: string, ctx: ExtensionCommandContext) => Promise<void>;
   const select = vi.fn<(title: string, options: string[]) => Promise<string | undefined>>().mockResolvedValue(undefined);
   const editor = vi.fn<(title: string) => Promise<string | undefined>>();
-  const ctx = { cwd: "/demo", hasUI: true, mode: "rpc", ui: { notify, select, editor, setStatus }, sessionManager: { getHeader, getEntries: () => entries, getBranch: () => entries }, modelRegistry: { getAvailableOfType, classify, find: vi.fn().mockReturnValue({}), hasConfiguredAuth: () => true } } as unknown as ExtensionCommandContext;
+  const ctx = { cwd: "/demo", hasUI: true, mode: "rpc", ui: { notify, select, editor, setStatus }, sessionManager: { getHeader, getSessionFile: () => parentFile, getEntries: () => entries, getBranch: () => entries }, modelRegistry: { getAvailableOfType, classify, find: vi.fn().mockReturnValue({}), hasConfiguredAuth: () => true } } as unknown as ExtensionCommandContext;
   const open = (overrides: Partial<ExtensionCommandContext> = {}) => handler("", { ...ctx, ...overrides });
   const history = async () => {
     select.mockResolvedValueOnce("Session history");
     await open();
     return select.mock.calls.filter(([title]) => title.startsWith("Subagent router · session history")).at(-1)?.[0];
   };
-  const run = (input = args, model = ctx.model) => {
+  const run = (input = args, model = ctx.model, registryOverrides = {}) => {
     select.mockResolvedValueOnce("Run a brief");
     editor.mockResolvedValueOnce(input);
-    return open({ model });
+    return open({ model, modelRegistry: { ...ctx.modelRegistry, ...registryOverrides } as typeof ctx.modelRegistry });
   };
   const start = (hasUI = true) => on.mock.calls.find(([event]) => event === "session_start")![1]({}, { ...ctx, hasUI });
   const before = async (messageType = "user", images: unknown[] = []) => {
@@ -233,11 +235,25 @@ test("opens Router status directly from home and backs out without running a bri
   select.mockResolvedValueOnce("Router status");
   await open();
   expect(select.mock.calls).toEqual([
-    ["Subagent router · home", ["Run a brief", "Rubric and settings", "Session history", "Router status"]],
+    ["Subagent router · home", ["Run a brief", "Rubric and settings", "Session history", "Router status", "Cost dashboard"]],
     ["Router status", ["Enabled", "Disabled"]],
-    ["Subagent router · home", ["Run a brief", "Rubric and settings", "Session history", "Router status"]],
+    ["Subagent router · home", ["Run a brief", "Rubric and settings", "Session history", "Router status", "Cost dashboard"]],
   ]);
   expect(classify).not.toHaveBeenCalled();
+});
+
+test("opens the Cost dashboard from home without running a brief", async () => {
+  const discover = vi.spyOn(SessionManager, "listAll").mockResolvedValue([]);
+  try {
+    const { open, select, classify } = setup();
+    select.mockResolvedValueOnce("Cost dashboard");
+    await open();
+    expect(select.mock.calls[1][0]).toContain("Average per eligible session: unknown");
+    expect(select.mock.calls[2][0]).toBe("Subagent router · home");
+    expect(classify).not.toHaveBeenCalled();
+  } finally {
+    discover.mockRestore();
+  }
 });
 
 test("cancels brief entry back to home without reading configuration", async () => {
@@ -297,6 +313,39 @@ test("shows one persisted row per request, including reported effective settings
   expect(report).toContain("Totals and savings unavailable");
   expect(report).toContain("writing · completed · router-spike-worker\nRequested: demo/writer (off)\nEffective: demo/real (low)\nClassifier: typesafe/jev-latest\nRun: worker-123\nReported: 10 in / 12 out / ? cache read / 2 cache write\nReported cost (USD): $0.003");
   expect(JSON.stringify(appendEntry.mock.calls)).not.toMatch(/Summarize this|private output|turns/);
+});
+
+test("persists reconciled child pricing after delegation and attributes it in the dashboard", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "router-accounting-"));
+  const discover = vi.spyOn(SessionManager, "listAll").mockResolvedValue([]);
+  try {
+    const parent = join(dir, "parent.jsonl");
+    const runId = "12345678-abcd-4567-abcd-123456789012";
+    const child = join(dir, "parent", runId, "run-0", "session.jsonl");
+    const { bus, open, run, select, appendEntry } = setup(parent);
+    const cost = { input: 1, output: 2, cacheRead: 0.25, cacheWrite: 1.25 };
+    const counters = { input: 1e6, output: 1e6, cacheRead: 1e6, cacheWrite: 1e6 };
+    await mkdir(dirname(child), { recursive: true });
+    await writeFile(child, [
+      { type: "session", id: "child", timestamp: "2026-01-01T00:00:01Z" },
+      { type: "message", message: { role: "assistant", provider: "demo", model: "real", stopReason: "stop", content: [{ text: "private output" }],
+        usage: { ...counters, totalTokens: 4e6, cost: { ...cost, total: 4.5, totalFromProvider: true } },
+      } },
+    ].map((record) => JSON.stringify(record)).join("\n"));
+    bus.on(requestEvent, (req) => bus.emit(responseEvent, {
+      ...req, status: "completed", runId, model: "demo/real", usage: { ...counters, cost: 4.5, turns: 1 }, result: { kind: "text", text: "private output" },
+    }));
+    await run(args, undefined, { find: vi.fn().mockReturnValue({ cost }) });
+    expect(appendEntry.mock.lastCall?.[1].costEvidence).toEqual({ models: [{ model: "demo/real", usage: { ...counters, cost: 4.5 }, rates: cost }] });
+    expect(JSON.stringify(appendEntry.mock.calls)).not.toMatch(/Summarize this|private output/);
+    select.mockResolvedValueOnce("Cost dashboard");
+    await open();
+    expect(select.mock.calls.at(-2)?.[0]).toContain("demo/real: $4.5000 Pi-reported");
+    expect(select.mock.calls.at(-2)?.[0]).toContain("Estimated savings: $0.0000 across 1/1 recorded sessions");
+  } finally {
+    discover.mockRestore();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("does not record usage for an unidentified session", async () => {
