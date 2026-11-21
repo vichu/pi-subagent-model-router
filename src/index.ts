@@ -9,6 +9,7 @@ import type {
 import { Type } from "typebox";
 
 import { showConfigMenu } from "./config-menu.ts";
+import { captureChildCost, showCostDashboard } from "./cost-dashboard.ts";
 import { pickConfigItem } from "./config-picker.ts";
 import { type ModelChoice, type RouterConfig, parseConfig, routerCommand, splitModel } from "./config.ts";
 import { reportedRunUsage, type RunReceipt, runEntryType, runSessionKey, showHistory } from "./history.ts";
@@ -88,6 +89,7 @@ export default function router(pi: ExtensionAPI) {
     const requestId = randomUUID();
     const agent = workspace ? "worker" : "router-spike-worker";
     const sessionKey = runSessionKey(ctx.sessionManager);
+    const parentFile = ctx.sessionManager.getSessionFile();
     const receipt: RunReceipt = { requestId, sessionKey, agent, route, backend, requested, status: "submitted" };
     pi.appendEntry(runEntryType, receipt);
     const response = await launch(pi.events, {
@@ -101,6 +103,7 @@ export default function router(pi: ExtensionAPI) {
     const effective = response.status === "invalid_request" ? {} : {
       runId: response.runId, model: response.model, thinking: response.thinking,
       usage: sessionKey && response.runId ? reportedRunUsage(response.usage) : undefined,
+      costEvidence: await captureChildCost(ctx, parentFile, response),
     };
     if (sessionKey === runSessionKey(ctx.sessionManager)) {
       pi.appendEntry<RunReceipt>(runEntryType, { ...receipt, ...effective, status: response.status });
@@ -206,6 +209,7 @@ export default function router(pi: ExtensionAPI) {
     { value: "Rubric and settings", label: "Rubric and settings", description: "Browse routes, edit models, or toggle routing" },
     { value: "Session history", label: "Session history", description: "Inspect routes and effective models used" },
     { value: "Router status", label: "Router status", description: "Enable or disable new runs without reloading" },
+    { value: "Cost dashboard", label: "Cost dashboard", description: "Inspect router worker costs and estimated savings" },
   ];
   pi.registerCommand(routerCommand, {
     description: "Open the inline subagent router workspace",
@@ -236,6 +240,9 @@ export default function router(pi: ExtensionAPI) {
             break;
           case "Router status":
             await showConfigMenu(ctx, configFile, session.signal, "status");
+            break;
+          case "Cost dashboard":
+            await showCostDashboard(ctx, session.signal);
             break;
           default:
             return;

@@ -32,7 +32,7 @@ The base model receives the delegation tool instead of direct execution tools fo
 
 ## Router workspace
 
-Run `/subagent-router` in Pi. The home screen and its controls open inline in the editor area at the bottom, not over the conversation. Choose **Run a brief**, **Rubric and settings**, **Session history**, or **Router status**. Press Esc to back out.
+Run `/subagent-router` in Pi. The home screen and its controls open inline in the editor area at the bottom, not over the conversation. Choose **Run a brief**, **Rubric and settings**, **Session history**, **Router status**, or **Cost dashboard**. Press Esc to back out.
 
 In **Rubric and settings**, use ↑/↓ to preview a route’s criteria, model, and thinking level, and Enter to edit. In the model dropdown, type to filter Pi’s available chat models by name, provider, or ID. The thinking dropdown shows the levels supported by the selected model.
 
@@ -87,7 +87,15 @@ History includes earlier runs with saved router receipts, but it cannot reconstr
 
 **All-subagent totals and savings are not available with `pi-subagents` 0.89.1.** The structured delegation response covers only requests sent through that bridge. Its optional aggregate can lose missing-field information and does not include per-attempt model/pricing or prove all usage was captured. Pi exposes the session tree and stored messages, but not a complete inventory of child launches and their priced usage. The native `/subagent-cost` command (also available via the subagent RPC `cost` method) is a best-effort branch report: it reads tool results, completion records and optional artifacts, can fill missing fields with zeros, and does not report per-model rates or prove coverage of every launch. Use it, an original tool result, or a completion card to inspect ordinary `pi-subagents` runs outside the router; the router does not merge those results.
 
-A savings estimate would need complete usage and pricing for each used model: price the **same whole-session child token mix** at each used model’s rates, select the largest estimate, then subtract actual child spend. Only eligible sessions could contribute to cumulative and average savings. The router does not calculate any of these figures or substitute current registry rates for missing historical prices.
+## Cost dashboard
+
+Open `/subagent-router` → **Cost dashboard** for the sum of estimated savings, the average per eligible session, and per-session spend by observed `provider/model`. In the TUI, select a session to inspect each model's spend and token counts; press Escape to return to the dashboard.
+
+The estimate prices the **same full-session mix of router-worker input, output, cache-read and cache-write tokens** at each model actually observed in that session. It takes the highest of those priced mixes, then subtracts the workers' Pi-reported spend. Negative values are possible; this is a fixed-token comparison, not a prediction of alternate-model behavior or a billing report. Pi's total is provider-reported where supported and otherwise a catalog estimate.
+
+Only sessions with at least one reconciled worker, no unresolved or unverified router requests, and consistent flat pricing for every observed model contribute to savings or the average. Rejected requests without an observed launch don't count as usage. The router matches terminal usage to assistant usage in the default fresh child session file, and captures rates from Pi's exact provider/model registry entry at completion, checking them against the child's recorded cost components. It does not infer model tiers from total spend or reprice old receipts with today's rates. Missing files, counts or pricing, tiered rates, 1-hour cache writes, supplementary child usage not covered by the response, and ambiguous receipts can make a session ineligible. Spend includes only reconciled workers and may be a partial subtotal. Unverified usage is not added to spend; an unknown value is not zero.
+
+Coverage is the current session and up to 50 other sessions from Pi's default saved-session store, selected in Pi’s recent-activity order, across workspaces and all recorded branches. It is not lifetime coverage. The dashboard shows discovery/read counts; files over 8 MiB or unreadable files are skipped. Older receipts without captured evidence are counted as unverified when they have usage observations, but do not supply dashboard spend or savings. A non-default child session root or an ephemeral parent can prevent reconciliation. Whole-session means the **router's direct-worker subset**: it excludes the parent, routing calls, nested workers, and jobs started outside the router. Session and run identities prevent counting copied fork receipts as new spend. Accounting stays in local Pi session entries and records IDs, model names, counters and rates, not prompt or result text.
 
 ## Development
 
