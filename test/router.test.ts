@@ -1,4 +1,5 @@
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { type ExtensionCommandContext, ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { expect, test, vi } from "vitest";
 import { type RouterConfig } from "../src/config.ts";
 import { determineRoute } from "../src/router.ts";
@@ -16,10 +17,12 @@ function setup() {
   const getAvailableOfType = vi.fn().mockResolvedValue([{ id: "jev" }, { id: "decisions" }]);
   const result = vi.fn().mockResolvedValue({ stopReason: "stop", content: [{ type: "thinking" }, { type: "text", text: " writer " }] });
   const streamSimple = vi.fn().mockReturnValue({ result });
-  const registry = { find, hasConfiguredAuth, classify, getAvailableOfType, streamSimple } as unknown as ExtensionCommandContext["modelRegistry"];
+  const getProvider = vi.fn().mockReturnValue({});
+  const findOfType = vi.fn().mockReturnValue({});
+  const registry = { find, hasConfiguredAuth, classify, getAvailableOfType, streamSimple, getProvider, findOfType } as unknown as ExtensionCommandContext["modelRegistry"];
   const abort = new AbortController();
   const run = (input = config) => determineRoute(input, "Draft a note", registry, base, abort.signal);
-  return { find, hasConfiguredAuth, classify, getAvailableOfType, result, streamSimple, registry, abort, run };
+  return { find, hasConfiguredAuth, classify, getAvailableOfType, result, streamSimple, getProvider, findOfType, registry, abort, run };
 }
 
 test("asks for fit and task category, but never sends worker model names or settings", async () => {
@@ -47,6 +50,34 @@ test.each([
   expect(await run()).toMatchObject({ route: "writer", backend: "q/decisions", notes: [expect.stringContaining(note as string)] });
 });
 
+test("uses Pi's native Decisions catalog, auth filtering, and classifier execution", async () => {
+  const credentials = new InMemoryCredentialStore();
+  const registry = new ModelRegistry(await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false }));
+  const backend = "openai/gpt-6-luna";
+  const run = () => determineRoute({ ...config, routes: [writer], classifiers: [backend] }, "Draft a note", registry, base, new AbortController().signal);
+  const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => Response.json({
+    answers: [{ name: "fits", type: "predicate", probability: 0.69 }],
+  }));
+  vi.stubGlobal("fetch", fetch);
+  vi.stubEnv("OPENAI_API_KEY", "fixture-api-key");
+  try {
+    await credentials.modify("openai", async () => ({ type: "oauth", access: "fixture-access", refresh: "fixture-refresh", expires: Date.now() + 3_600_000 }));
+    expect(registry.findOfType("classifier", "openai", "gpt-6-luna")).toBeDefined();
+    expect(await run()).toMatchObject({ backend: null, target: base, notes: [expect.stringContaining("ChatGPT sign-in"), expect.any(String)] });
+    expect(fetch).not.toHaveBeenCalled();
+
+    await credentials.delete("openai");
+    expect(await run()).toMatchObject({ backend, target: base, notes: [expect.stringContaining("no clear rubric match"), expect.any(String)] });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const [url, request] = fetch.mock.calls[0];
+    expect(String(url)).toBe("https://api.openai.com/v1/decisions");
+    expect(new Headers(request?.headers).get("authorization")).toBe("Bearer fixture-api-key");
+  } finally {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  }
+});
+
 test("tries Decisions after missing credentials", async () => {
   const { run, getAvailableOfType } = setup();
   getAvailableOfType.mockResolvedValueOnce([]);
@@ -70,7 +101,7 @@ test.each([true, false])("falls back if selected worker is unavailable (known: %
   const { run, find, hasConfiguredAuth } = setup();
   if (known) hasConfiguredAuth.mockReturnValue(false);
   else find.mockReturnValueOnce(undefined as never);
-  expect(await run()).toMatchObject({ route: null, target: base, notes: [expect.stringContaining("worker model"), expect.stringContaining("Using base")] });
+  expect(await run()).toMatchObject({ route: null, target: base, notes: [expect.stringContaining("worker model"), expect.stringContaining("Falling back to the base")] });
 });
 
 test.each(["off", "low"] as const)("runs an explicitly configured routing chat model (%s)", async (thinking) => {
@@ -84,7 +115,7 @@ test.each([
 ])("falls back on a chat response with status %s and text %s", async (stopReason, text, note) => {
   const { run, result } = setup();
   result.mockResolvedValue({ stopReason, content: [{ type: "text", text }] });
-  expect(await run({ ...config, classifiers: [], routing_model: base })).toMatchObject({ route: null, target: base, notes: [expect.stringContaining(note), expect.stringContaining("Using base")] });
+  expect(await run({ ...config, classifiers: [], routing_model: base })).toMatchObject({ route: null, target: base, notes: [expect.stringContaining(note), expect.stringContaining("Falling back to the base")] });
 });
 
 test("falls back when routing-model credentials are not configured", async () => {
@@ -104,4 +135,21 @@ test.each(["before", "classifier", "chat"])("cancellation during %s is not treat
   classify.mockImplementation(async () => { abort.abort(); return classifierResult(); });
   result.mockImplementation(async () => { abort.abort(); return {}; });
   await expect(run(stage === "chat" ? { ...config, classifiers: [], routing_model: base } : config)).rejects.toThrow("aborted");
+});
+
+test.each([
+  [false, "provider is not loaded"], [true, "model is not in Pi's catalog"],
+])("distinguishes a missing classifier catalog entry (known provider: %s)", async (known, note) => {
+  const { getProvider, findOfType, getAvailableOfType, run } = setup();
+  getAvailableOfType.mockResolvedValueOnce([]);
+  if (known) findOfType.mockReturnValueOnce(undefined);
+  else getProvider.mockReturnValueOnce(undefined);
+  expect(await run()).toMatchObject({ backend: "q/decisions", notes: [expect.stringContaining(note)] });
+});
+
+test("explains when the selected chat model's provider is not loaded", async () => {
+  const { find, getProvider, run } = setup();
+  find.mockReturnValueOnce(undefined as never);
+  getProvider.mockReturnValueOnce(undefined);
+  expect(await run()).toMatchObject({ route: null, notes: [expect.stringContaining("Provider p for chat model p/writer is not loaded"), expect.any(String)] });
 });

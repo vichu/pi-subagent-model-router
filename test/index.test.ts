@@ -11,8 +11,8 @@ import registerRouter from "../src/index.ts";
 vi.mock("node:fs/promises", async (original) => ({ ...await original<typeof import("node:fs/promises")>(), readFile: vi.fn() }));
 
 const requestEvent = "prompt-template:subagent:request";
+const startedEvent = "prompt-template:subagent:started";
 const responseEvent = "prompt-template:subagent:response";
-const updateEvent = "prompt-template:subagent:update";
 const cancelEvent = "prompt-template:subagent:cancel";
 const args = "Summarize this\nbrief.";
 const routes = [
@@ -47,7 +47,8 @@ function setup(parentFile: string | null = null) {
   const handler = registerCommand.mock.calls[0][1].handler as (input: string, ctx: ExtensionCommandContext) => Promise<void>;
   const select = vi.fn<(title: string, options: string[]) => Promise<string | undefined>>().mockResolvedValue(undefined);
   const editor = vi.fn<(title: string) => Promise<string | undefined>>();
-  const ctx = { cwd: "/demo", hasUI: true, mode: "rpc", ui: { notify, select, editor, setStatus }, sessionManager: { getHeader, getSessionFile: () => parentFile, getEntries: () => entries, getBranch: () => entries }, modelRegistry: { getAvailableOfType, classify, find: vi.fn().mockReturnValue({}), hasConfiguredAuth: () => true } } as unknown as ExtensionCommandContext;
+  const find = vi.fn().mockReturnValue({});
+  const ctx = { cwd: "/demo", isProjectTrusted: () => false, hasUI: true, mode: "rpc", ui: { notify, select, editor, setStatus }, sessionManager: { getHeader, getSessionFile: () => parentFile, getEntries: () => entries, getBranch: () => entries }, modelRegistry: { getAvailableOfType, classify, find, hasConfiguredAuth: () => true, getProvider: () => ({}), findOfType: () => ({}) } } as unknown as ExtensionCommandContext;
   const open = (overrides: Partial<ExtensionCommandContext> = {}) => handler("", { ...ctx, ...overrides });
   const history = async () => {
     select.mockResolvedValueOnce("Session history");
@@ -60,15 +61,10 @@ function setup(parentFile: string | null = null) {
     return open({ model, modelRegistry: { ...ctx.modelRegistry, ...registryOverrides } as typeof ctx.modelRegistry });
   };
   const start = (hasUI = true) => on.mock.calls.find(([event]) => event === "session_start")![1]({}, { ...ctx, hasUI });
-  const before = async (messageType = "user", images: unknown[] = []) => {
-    const options = { selectedTools: ["read", "bash"], promptGuidelines: [] };
-    await on.mock.calls.find(([event]) => event === "before_agent_start")![1]({ messageType, images, systemPromptOptions: options }, ctx);
-    return options;
-  };
-  const settle = () => on.mock.calls.find(([event]) => event === "agent_settled")![1]();
-  const tool = registerTool.mock.calls[0][0];
-  const delegate = (tasks: Array<{ brief: string; access: "text" | "workspace" }>, signal?: AbortSignal, update?: ReturnType<typeof vi.fn>) => tool.execute("call", { tasks }, signal, update, ctx);
-  return { bus, getHeader, notify, setStatus, start, before, settle, delegate, setActiveTools, setModel, setThinkingLevel, appendEntry, getAvailableOfType, classify, registerCommand, select, open, history, run, shutdown: () => on.mock.calls[0][1]() };
+  return { bus, getHeader, notify, setStatus, start, appendEntry, getAvailableOfType, classify, find, registerCommand,
+    registerTool, setActiveTools, setModel, setThinkingLevel, on, select, open, history, run,
+    shutdown: () => on.mock.calls.find(([event]) => event === "session_shutdown")![1]() };
+
 }
 
 test.each([
@@ -84,12 +80,13 @@ test.each([
     expect(req).toMatchObject({ model, thinking, cwd: "/demo", context: "fresh", agent: "router-spike-worker", toolBudget: { hard: 0, block: "*" } });
     bus.emit(responseEvent, undefined);
     for (const key of ["requestId", "ownerRunId", "nodeId"]) bus.emit(responseEvent, { ...req, [key]: "other" });
-    bus.emit(responseEvent, { ...req, status: "completed", result: { kind: "text", text: "done" } });
+    bus.emit(startedEvent, req);
+    queueMicrotask(() => bus.emit(responseEvent, { ...req, agent: "router-spike-worker", status: "completed", result: { kind: "text", text: "done" } }));
   });
   await run();
   expect(vi.mocked(readFile).mock.calls[0][0]).toEqual(new URL("../router.json", import.meta.url));
   expect(bus.listenerCount(responseEvent)).toBe(0);
-  expect(notify).toHaveBeenCalledWith(`${route}: requested ${model} (${thinking}); effective ${model} (${thinking})\ndone`, "info");
+  expect(notify).toHaveBeenCalledWith(`${route}: requested ${model} (${thinking}); effective ${model} (${thinking}); agent router-spike-worker (text)\ndone`, "info");
 });
 
 test("registers only the workspace command and checks UI availability", async () => {
@@ -110,117 +107,10 @@ test("initializes the footer from config on session start", async () => {
   expect(setStatus).toHaveBeenLastCalledWith("pi-subagent-model-router", "Router: config unavailable");
 });
 
-test("uses the configured orchestrator on normal prompts and restores the previous tools", async () => {
-  const { before, settle, setModel, setThinkingLevel, setActiveTools } = setup();
-  settle();
-  expect(setActiveTools).not.toHaveBeenCalled();
-  vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes, base_agent: { model: "demo/base", thinking: "low" } }));
-  expect(await before()).toMatchObject({ selectedTools: ["subagent_router_delegate"], promptGuidelines: [expect.stringContaining("coordinating user tasks")] });
-  expect(setModel).toHaveBeenCalledTimes(1);
-  expect(setThinkingLevel).toHaveBeenCalledWith("low");
-  settle();
-  expect(setActiveTools).toHaveBeenCalledWith(["read", "bash"]);
-});
-
-test("bypasses automatic routing for attachments, custom runs, and disabled or unreadable config", async () => {
-  const { before, delegate, setStatus } = setup();
-  expect((await before("custom")).selectedTools).toEqual(["read", "bash"]);
-  expect((await before("user", [{}])).selectedTools).toEqual(["read", "bash"]);
-  expect(readFile).not.toHaveBeenCalled();
-  vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes, enabled: false }));
-  expect((await before()).selectedTools).toEqual(["read", "bash"]);
-  vi.mocked(readFile).mockRejectedValueOnce(new Error("read error"));
-  expect((await before()).selectedTools).toEqual(["read", "bash"]);
-  expect(setStatus).toHaveBeenLastCalledWith("pi-subagent-model-router", "Router: config unavailable");
-  await expect(delegate([{ brief: "Draft", access: "text" }])).rejects.toThrow("not active");
-});
-
-test("can use the current model if Pi cannot set the configured base model", async () => {
-  const { before, setModel, setThinkingLevel, notify } = setup();
-  setModel.mockResolvedValue(false);
-  vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes, base_agent: { model: "demo/base", thinking: "low" } }));
-  expect((await before()).selectedTools).toEqual(["subagent_router_delegate"]);
-  expect(notify).toHaveBeenCalledWith(expect.stringContaining("using the current Pi model"), "warning");
-  expect(setThinkingLevel).not.toHaveBeenCalled();
-});
-
-test("keeps a workspace worker running past the old cutoff and cleans up after completion", async () => {
-  const { before, delegate, bus } = setup();
-  const controller = new AbortController();
-  const update = vi.fn();
-  const cancel = vi.fn();
-  await before();
-  vi.useFakeTimers();
-  const timeout = vi.spyOn(AbortSignal, "timeout");
-  try {
-    bus.on(cancelEvent, cancel);
-    bus.on(requestEvent, (req: SubagentDelegationRequest) => {
-      expect(req).toMatchObject({ agent: "worker", model: "demo/writer", timeoutMs: 2_147_483_647 });
-      expect(req.toolBudget).toBeUndefined();
-      bus.emit(updateEvent, undefined);
-      bus.emit(updateEvent, { ...req, nodeId: "other" });
-      bus.emit(updateEvent, { ...req, currentTool: "read" });
-      bus.emit(updateEvent, req);
-      setTimeout(() => bus.emit(responseEvent, { ...req, status: "completed", result: { kind: "text", text: "workspace findings" } }), 120_000);
-    });
-    const pending = delegate([{ brief: "Inspect the file", access: "workspace" }], controller.signal, update);
-    await vi.advanceTimersByTimeAsync(120_000);
-    const result = await pending;
-    expect(timeout.mock.calls).toEqual([[10_000]]); // Only classification has a router deadline.
-    expect(result.content[0].text).toContain("workspace findings");
-    expect(result.isError).toBe(false);
-    expect(update.mock.calls.map(([data]) => data.content[0].text)).toEqual([
-      "Task 1: classifying", "Task 1: writing → demo/writer (off)", "Task 1: child running read", "Task 1: child reported progress",
-    ]);
-    expect(bus.listenerCount(responseEvent)).toBe(0);
-    expect(bus.listenerCount(updateEvent)).toBe(0);
-    controller.abort();
-    expect(cancel).not.toHaveBeenCalled();
-  } finally {
-    timeout.mockRestore();
-    vi.useRealTimers();
-  }
-});
-
-test("cancels an active worker when the tool call is aborted and removes its listeners", async () => {
-  const { before, delegate, bus } = setup();
-  const controller = new AbortController();
-  const cancel = vi.fn();
-  await before();
-  bus.on(cancelEvent, cancel);
-  bus.on(requestEvent, ({ requestId, ownerRunId, nodeId }) => {
-    expect(bus.listenerCount(updateEvent)).toBe(1);
-    controller.abort();
-    expect(cancel).toHaveBeenCalledExactlyOnceWith({ requestId, ownerRunId, nodeId });
-  });
-  const result = await delegate([{ brief: "Draft a note", access: "text" }], controller.signal, vi.fn());
-  expect(result.isError).toBe(true);
-  expect(result.content[0].text).toContain("Child cancelled.");
-  expect(bus.listenerCount(responseEvent)).toBe(0);
-  expect(bus.listenerCount(updateEvent)).toBe(0);
-});
-
-test("allows parallel text children, preserves partial results, and rejects batches with workspace work", async () => {
-  const { before, delegate, bus } = setup();
-  await before();
-  await expect(delegate([{ brief: "A", access: "text" }, { brief: "B", access: "workspace" }])).rejects.toThrow("one at a time");
-  const requests: SubagentDelegationRequest[] = [];
-  bus.on(requestEvent, (req: SubagentDelegationRequest) => {
-    requests.push(req);
-    if (requests.length === 2) {
-      bus.emit(responseEvent, { ...requests[0], status: "failed", error: "test failure" });
-      bus.emit(responseEvent, { ...requests[1], status: "completed", result: { kind: "text", text: "second result" } });
-    }
-  });
-  const result = await delegate([{ brief: "A", access: "text" }, { brief: "B", access: "text" }]);
-  expect(result.content[0].text).toMatch(/test failure[\s\S]*second result/);
-  expect(result.isError).toBe(true);
-  expect(requests.every((req) => req.toolBudget?.hard === 0)).toBe(true);
-  bus.on(requestEvent, (req: SubagentDelegationRequest) => bus.emit(responseEvent, { ...req, status: "completed", result: { kind: "text", text: "fallback result" } }));
-  vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes, classifiers: [], base_agent: { model: "demo/base", thinking: "off" } }));
-  expect((await delegate([{ brief: "Fallback", access: "text" }])).content[0].text).toContain("base fallback: requested demo/base");
-  vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes, enabled: false }));
-  await expect(delegate([{ brief: "C", access: "text" }])).rejects.toThrow("disabled");
+test("registers a native tool hook without installing a replacement tool or changing the parent", () => {
+  const { on, registerTool, setModel, setThinkingLevel, setActiveTools } = setup();
+  expect(on.mock.calls.map(([event]) => event)).toEqual(["tool_call", "session_shutdown", "session_start"]);
+  for (const fn of [registerTool, setModel, setThinkingLevel, setActiveTools]) expect(fn).not.toHaveBeenCalled();
 });
 
 test("opens settings from home and returns there when the submenu closes", async () => {
@@ -395,9 +285,11 @@ test("does not put a terminal receipt into a different session", async () => {
 });
 
 test("keeps rejected requests distinct from confirmed launches", async () => {
-  const { bus, run, history } = setup();
-  bus.on(requestEvent, ({ requestId, ownerRunId, nodeId }) => bus.emit(responseEvent, { requestId, ownerRunId, nodeId, status: "invalid_request" }));
+  const { bus, run, history, notify } = setup();
+  bus.on(requestEvent, ({ requestId, ownerRunId, nodeId }) => bus.emit(responseEvent, { requestId, ownerRunId, nodeId, status: "invalid_request", error: "Unknown agent: router-spike-worker\nuntrusted details" }));
   await run();
+  expect(notify).toHaveBeenCalledWith(expect.stringContaining("rejected the delegation request (invalid_request)"), "error");
+  expect(notify.mock.calls[0][0]).not.toMatch(/untrusted details|pi install/);
   expect(await history()).toMatch(/invalid_request[\s\S]*Effective: unknown \(unknown\)[\s\S]*unconfirmed/);
 });
 
@@ -409,10 +301,34 @@ test("shows usage without reading config or classifying an empty brief", async (
   expect(getAvailableOfType).not.toHaveBeenCalled();
 });
 
+test("rejects more than 1 MiB of UTF-8 before classifying or sending a manual brief", async () => {
+  const { notify, classify, getAvailableOfType, bus, run, appendEntry } = setup();
+  const request = vi.fn();
+  bus.on(requestEvent, request);
+  await run("é".repeat(512 * 1024) + "x");
+  expect(notify).toHaveBeenCalledWith("Shorten the task brief to at most 1 MiB in UTF-8.", "warning");
+  expect(readFile).not.toHaveBeenCalled();
+  expect(getAvailableOfType).not.toHaveBeenCalled();
+  expect(classify).not.toHaveBeenCalled();
+  expect(request).not.toHaveBeenCalled();
+  expect(appendEntry).not.toHaveBeenCalled();
+});
+
+test("accepts a trimmed manual brief of exactly 1 MiB in UTF-8", async () => {
+  const { bus, run, classify } = setup();
+  const task = "é".repeat(512 * 1024);
+  const request = vi.fn((req) => bus.emit(responseEvent, { ...req, status: "completed", result: { kind: "text", text: "done" } }));
+  bus.on(requestEvent, request);
+  await run(` ${task}\n`);
+  expect(classify).toHaveBeenCalledOnce();
+  expect(request).toHaveBeenCalledOnce();
+  expect(request.mock.calls[0][0].task).toBe(task);
+});
+
 test.each([
-  [{ status: "failed", error: "bad model" }, "bad model", "error"],
+  [{ status: "failed", error: "bad model" }, "requested demo/writer", "error"],
   [{ status: "completed", result: undefined }, "did not return text", "error"],
-  [{ status: "completed", result: { kind: "text", text: "done" }, model: undefined, thinking: undefined }, "effective unknown (unknown)", "info"],
+  [{ status: "completed", result: { kind: "text", text: "done" }, model: undefined, thinking: undefined, agent: undefined }, "effective unknown (unknown)", "info"],
 ])("reports response without inventing effective settings", async (response, message, level) => {
   const { bus, notify, run } = setup();
   bus.on(requestEvent, (req) => bus.emit(responseEvent, { ...req, ...response }));
@@ -477,4 +393,69 @@ test("does not launch when shutdown precedes the classifier response", async () 
   await run();
   expect(request).not.toHaveBeenCalled();
   expect(notify).toHaveBeenCalledWith(expect.stringContaining("AbortError"), "error");
+});
+
+test("fails promptly when no compatible pi-subagents bridge acknowledges the manual request", async () => {
+  const { bus, run, notify, appendEntry } = setup();
+  bus.on(requestEvent, (req) => {
+    bus.emit(startedEvent, undefined);
+    bus.emit(startedEvent, { ...req, requestId: "other" });
+  });
+  await run();
+  expect(notify).toHaveBeenCalledWith(expect.stringContaining("pi install npm:pi-subagents@0.89.1"), "error");
+  expect(bus.listenerCount(startedEvent)).toBe(0);
+  expect(bus.listenerCount(responseEvent)).toBe(0);
+  expect(appendEntry).toHaveBeenLastCalledWith(runEntryType, expect.objectContaining({ status: "unavailable_context" }));
+});
+
+test("diagnoses a missing packaged text agent without trying another agent", async () => {
+  const { bus, run, notify } = setup();
+  const requests = vi.fn((req) => bus.emit(responseEvent, { ...req, status: "failed", error: "Unknown agent: router-spike-worker\nprovider-body-secret" }));
+  bus.on(requestEvent, requests);
+  await run();
+  expect(notify).toHaveBeenCalledWith(expect.stringContaining("agents/router-spike-worker.md"), "error");
+  expect(notify.mock.calls[0][0]).not.toContain("provider-body-secret");
+  expect(requests).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ agent: "router-spike-worker" }));
+});
+
+test("does not echo raw worker errors into the UI", async () => {
+  const { bus, notify, run } = setup();
+  bus.on(requestEvent, (req) => bus.emit(responseEvent, { ...req, status: "failed", error: "Unauthorized: provider-body-secret" }));
+  await run();
+  expect(notify).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("credentials are usable by the child"), "error");
+  expect(notify.mock.calls[0][0]).not.toContain("provider-body-secret");
+});
+
+test("checks configured fallback authentication instead of silently switching providers", async () => {
+  const { bus, notify, run, getAvailableOfType } = setup();
+  getAvailableOfType.mockResolvedValue([]);
+  const request = vi.fn();
+  bus.on(requestEvent, request);
+  vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes, base_agent: { model: "demo/base", thinking: "low" } }));
+  await run(args, { provider: "other", id: "current" } as ExtensionCommandContext["model"], { hasConfiguredAuth: () => false });
+  expect(notify).toHaveBeenCalledWith(expect.stringContaining("TYPESAFE_API_KEY"), "warning");
+  expect(notify).toHaveBeenCalledWith(expect.stringContaining("ChatGPT sign-in"), "warning");
+  expect(notify).toHaveBeenCalledWith(expect.stringContaining("base fallback: Chat model demo/base has no configured authentication"), "error");
+  expect(request).not.toHaveBeenCalled();
+});
+
+test("keeps the configured fallback when Jev and Decisions credentials are unavailable", async () => {
+  const { bus, notify, run, getAvailableOfType, classify } = setup();
+  getAvailableOfType.mockResolvedValue([]);
+  const request = vi.fn((req) => bus.emit(responseEvent, { ...req, status: "completed", result: { kind: "text", text: "fallback answer" } }));
+  bus.on(requestEvent, request);
+  vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes, base_agent: { model: "demo/base", thinking: "low" } }));
+  await run();
+  expect(classify).not.toHaveBeenCalled();
+  expect(request).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ agent: "router-spike-worker", model: "demo/base", thinking: "low" }));
+  expect(notify).toHaveBeenCalledWith(expect.stringContaining("fallback answer"), "info");
+});
+
+test("cleans up listeners when emitting a delegation request throws", async () => {
+  const { bus, notify, run } = setup();
+  bus.on(requestEvent, () => { throw new Error("untrusted extension error"); });
+  await run();
+  expect(notify).toHaveBeenCalledWith(expect.stringContaining("Could not send the delegation request"), "error");
+  expect(bus.listenerCount(startedEvent)).toBe(0);
+  expect(bus.listenerCount(responseEvent)).toBe(0);
 });

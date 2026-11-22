@@ -9,6 +9,10 @@ test("defaults to Jev, then Decisions API", () => {
   expect(parse(base)).toEqual({ enabled: true, routes: [route], classifiers: ["typesafe/jev-latest", "openai/gpt-6-luna"] });
 });
 
+test("parseConfig drops a stale route agent key like other unknown fields", () => {
+  expect(parse({ ...base, routes: [{ ...route, agent: "custom-reviewer", extra: true }] }).routes).toEqual([route]);
+});
+
 test("accepts an explicit enable or disable setting", () => {
   expect(parse({ ...base, enabled: true }).enabled).toBe(true);
   expect(parse({ ...base, enabled: false }).enabled).toBe(false);

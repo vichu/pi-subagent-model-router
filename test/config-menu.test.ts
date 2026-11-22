@@ -58,6 +58,14 @@ test("edits thinking with a picker", async () => {
   expect((await stored()).routes[0].thinking).toBe("high");
 });
 
+test("showConfigMenu offers no agent field and drops a stale agent key on save", async () => {
+  await writeFile(path, JSON.stringify({ ...base, routes: [{ ...row, agent: "custom-reviewer" }, other] }));
+  const { run, ui } = setup([route, "Thinking", "high"]);
+  await run();
+  expect(ui.select).toHaveBeenCalledWith(row.label, ["Name", "Label", "When to use", "Model", "Thinking", "Remove route"]);
+  expect((await stored()).routes).toEqual([{ ...row, thinking: "high" }, other]);
+});
+
 test("adds and removes a route after confirmation", async () => {
   const { run, ui } = setup(["Add route", "demo/short", "off"], ["docs", "Docs", "Draft a README"]);
   await run();
