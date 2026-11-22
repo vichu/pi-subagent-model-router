@@ -4,23 +4,23 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import type {
   SubagentDelegationRequest,
   SubagentDelegationResponse,
-  SubagentDelegationUpdate,
+  SubagentDelegationStarted,
 } from "pi-subagents/delegation";
-import { Type } from "typebox";
 
 import { showConfigMenu } from "./config-menu.ts";
 import { captureChildCost, showCostDashboard } from "./cost-dashboard.ts";
+import { registerNativeRouting } from "./native-routing.ts";
 import { pickConfigItem } from "./config-picker.ts";
-import { type ModelChoice, type RouterConfig, parseConfig, routerCommand, splitModel } from "./config.ts";
+import { type RouterConfig, parseConfig, routerCommand } from "./config.ts";
 import { reportedRunUsage, type RunReceipt, runEntryType, runSessionKey, showHistory } from "./history.ts";
 import { setRouterStatus } from "./router-status.ts";
-import { determineRoute } from "./router.ts";
+import { checkChatModel, determineRoute, type RoutingDecision } from "./router.ts";
 
 // Public wire contract. pi-subagents is loaded separately as a Pi extension,
-// not instantiated or resolved at runtime from this package's module root.
+// not instantiated by the router. Preflight is a local discovery check, not a launch.
 const delegation = {
   request: "prompt-template:subagent:request",
-  update: "prompt-template:subagent:update",
+  started: "prompt-template:subagent:started",
   response: "prompt-template:subagent:response",
   cancel: "prompt-template:subagent:cancel",
 } as const;
@@ -28,36 +28,37 @@ const delegation = {
 // Omission uses pi-subagents' foreground default. Use its largest supported
 // timer instead, and let the caller's abort signal govern the router's wait.
 const maxDelegationTimeoutMs = 2_147_483_647;
+const maxDelegationTaskBytes = 1024 * 1024;
 const configFile = new URL("../router.json", import.meta.url);
-const toolName = "subagent_router_delegate";
-const orchestration = "You are the base model coordinating user tasks. For actionable work, call subagent_router_delegate before presenting a result; do not do the work yourself. Keep simple clarification and conversational replies local. Use one child for a single task. Batch only independent text-only tasks, and run tasks that need workspace files, commands or edits one at a time. For dependent work, wait for the prerequisite result, then brief the next child with the relevant findings. Stay within the user's scope. Synthesize the results and disclose failures.";
+const intercomBridge = { mode: "off" } as const;
 
 function launch(
   events: ExtensionAPI["events"],
   request: SubagentDelegationRequest,
   signal: AbortSignal,
-  onProgress?: (update: SubagentDelegationUpdate) => void,
 ): Promise<SubagentDelegationResponse> {
   const { requestId, ownerRunId, nodeId } = request;
-  function matches(payload: SubagentDelegationResponse | SubagentDelegationUpdate) {
+  function matches(payload: SubagentDelegationResponse | SubagentDelegationStarted) {
     return payload.requestId === requestId && payload.ownerRunId === ownerRunId && payload.nodeId === nodeId;
   }
   return new Promise((resolve, reject) => {
     signal.throwIfAborted();
+    let acknowledged = false;
+    const offStarted = events.on(delegation.started, (payload) => {
+      const started = payload as SubagentDelegationStarted | undefined;
+      if (started && matches(started)) acknowledged = true;
+    });
     const offResponse = events.on(delegation.response, (payload) => {
       const response = payload as SubagentDelegationResponse | undefined;
       if (response && matches(response)) {
+        acknowledged = true;
         cleanup();
         resolve(response);
       }
     });
-    const offUpdate = onProgress && events.on(delegation.update, (payload) => {
-      const update = payload as SubagentDelegationUpdate | undefined;
-      if (update && matches(update)) onProgress(update);
-    });
     function cleanup() {
+      offStarted();
       offResponse();
-      offUpdate?.();
       signal.removeEventListener("abort", abort);
     }
     function abort() {
@@ -66,12 +67,39 @@ function launch(
       reject(new Error("Child cancelled."));
     }
     signal.addEventListener("abort", abort, { once: true });
-    events.emit(delegation.request, request);
+    try {
+      events.emit(delegation.request, request);
+    } catch {
+      cleanup();
+      return reject(new Error("Could not send the delegation request. Check Pi's extension setup and restart Pi."));
+    }
+    // With Pi's synchronous event dispatch, pi-subagents 0.89.1 emits
+    // started (or a terminal response) before its first await.
+    offStarted();
+    if (!acknowledged && !signal.aborted) {
+      cleanup();
+      resolve({ requestId, ownerRunId, nodeId, status: "unavailable_context" });
+    }
   });
+}
+
+function childFailure(response: SubagentDelegationResponse, agent: string, model: string) {
+  if (response.status === "invalid_request") {
+    return "pi-subagents rejected the delegation request (invalid_request). Check that the running extension is pi-subagents 0.89.1.";
+  }
+  if (response.error?.startsWith(`Unknown agent: ${agent}`)) {
+    return `Unknown agent: ${agent}. Install the router as a Pi package or run from its trusted checkout root so pi-subagents can discover agents/router-spike-worker.md. Check that the agent is not disabled by a subagent settings override.`;
+  }
+  if (response.status === "unavailable_context") {
+    return `pi-subagents delegation unavailable (${response.status}). Install or enable pi-subagents 0.89.1 (pi install npm:pi-subagents@0.89.1), then restart Pi.`;
+  }
+  // A bridge error can include raw provider responses or credentials.
+  return `Agent ${agent} did not return text successfully (${response.status}; requested ${model}). For worker failures, check that this chat model and its credentials are usable by the child, and inspect the pi-subagents run locally if one was created.`;
 }
 
 export default function router(pi: ExtensionAPI) {
   const session = new AbortController();
+  registerNativeRouting(pi, configFile, session.signal);
   pi.on("session_shutdown", () => { session.abort(); });
   pi.on("session_start", async (_event, ctx) => {
     if (!ctx.hasUI) return;
@@ -83,11 +111,15 @@ export default function router(pi: ExtensionAPI) {
     }
   });
 
-  async function runChild(ctx: ExtensionContext, task: string, route: string, requested: ModelChoice, backend: string | null, workspace: boolean, signal: AbortSignal, onProgress?: (update: SubagentDelegationUpdate) => void) {
+  async function runChild(ctx: ExtensionContext, task: string, decision: RoutingDecision, signal: AbortSignal) {
     signal.throwIfAborted();
+    const { target: requested, backend } = decision;
+    const route = decision.route ?? "base fallback";
     const { model, thinking } = requested;
+    const { issue } = checkChatModel(ctx.modelRegistry, model);
+    if (issue) throw new Error(`${route}: ${issue}`);
+    const agent = "router-spike-worker";
     const requestId = randomUUID();
-    const agent = workspace ? "worker" : "router-spike-worker";
     const sessionKey = runSessionKey(ctx.sessionManager);
     const parentFile = ctx.sessionManager.getSessionFile();
     const receipt: RunReceipt = { requestId, sessionKey, agent, route, backend, requested, status: "submitted" };
@@ -96,13 +128,13 @@ export default function router(pi: ExtensionAPI) {
       requestId, ownerRunId: randomUUID(), nodeId: "router",
       agent, task, context: "fresh", cwd: ctx.cwd, model, thinking,
       timeoutMs: maxDelegationTimeoutMs,
-      ...(workspace ? {} : { toolBudget: { hard: 0, block: "*" as const } }),
-      intercomBridge: { mode: "off" },
+      toolBudget: { hard: 0, block: "*" },
+      intercomBridge,
       result: { kind: "text" },
-    }, signal, onProgress);
+    }, signal);
     const usage = response.status !== "invalid_request" && sessionKey && response.runId ? reportedRunUsage(response.usage) : undefined;
     const effective = response.status === "invalid_request" ? {} : {
-      runId: response.runId, model: response.model, thinking: response.thinking,
+      agent: response.agent ?? agent, runId: response.runId, model: response.model, thinking: response.thinking,
       usage,
       costAccounting: usage ? { version: 1 as const, evidence: await captureChildCost(ctx, parentFile, response) } : undefined,
     };
@@ -110,9 +142,9 @@ export default function router(pi: ExtensionAPI) {
       pi.appendEntry<RunReceipt>(runEntryType, { ...receipt, ...effective, status: response.status });
     }
     if (response.status !== "completed" || response.result?.kind !== "text") {
-      throw new Error(`Child did not return text successfully (${response.status}).${response.error ? ` ${response.error}` : ""}`);
+      throw new Error(childFailure(response, agent, model));
     }
-    return `${route}: requested ${model} (${thinking}); effective ${response.model ?? "unknown"} (${response.thinking ?? "unknown"})\n${response.result.text}`;
+    return `${route}: requested ${model} (${thinking}); effective ${response.model ?? "unknown"} (${response.thinking ?? "unknown"}); agent ${response.agent ?? agent} (text)\n${response.result.text}`;
   }
 
   let warnedAboutBase = false;
@@ -126,69 +158,6 @@ export default function router(pi: ExtensionAPI) {
     return decision;
   }
 
-  let priorTools: string[] | undefined;
-  pi.on("before_agent_start", async (event, ctx) => {
-    if (event.messageType !== "user" || event.images?.length) return;
-    const config = await readFile(configFile, { encoding: "utf8", signal: session.signal }).then(parseConfig).catch(() => undefined);
-    if (!config) {
-      setRouterStatus(ctx.ui, "unavailable");
-      return;
-    }
-    setRouterStatus(ctx.ui, config.enabled);
-    if (!config.enabled) return;
-    if (config.base_agent) {
-      const model = ctx.modelRegistry.find(...splitModel(config.base_agent.model));
-      if (model && await pi.setModel(model)) pi.setThinkingLevel(config.base_agent.thinking);
-      else ctx.ui.notify(`Configured base model ${config.base_agent.model} is unavailable; using the current Pi model.`, "warning");
-    }
-    priorTools = pi.getActiveTools();
-    event.systemPromptOptions.selectedTools = [toolName];
-    event.systemPromptOptions.promptGuidelines.push(orchestration);
-  });
-  pi.on("agent_settled", () => {
-    if (!priorTools) return;
-    const tools = priorTools;
-    priorTools = undefined;
-    pi.setActiveTools(tools);
-  });
-
-  pi.registerTool({
-    name: toolName,
-    label: "Routed subagents",
-    description: "Delegate bounded tasks to pi-subagents using the routing matrix. Text tasks use no tools; workspace tasks may use project tools.",
-    exposure: "model-only",
-    defaultActive: false,
-    executionMode: "sequential",
-    parameters: Type.Object({
-      tasks: Type.Array(Type.Object({
-        brief: Type.String({ minLength: 1, maxLength: 12_000, description: "Self-contained deliverable, context, permissions and verification." }),
-        access: Type.Union([Type.Literal("text"), Type.Literal("workspace")], { description: "Use workspace for file inspection, commands, or edits. Only text tasks may be batched." }),
-      }, { additionalProperties: false }), { minItems: 1, maxItems: 3 }),
-    }, { additionalProperties: false }),
-    async execute(_id, { tasks }, abort, onUpdate, ctx) {
-      if (!priorTools) throw new Error("Automatic routing is not active for this turn.");
-      const signal = AbortSignal.any([session.signal, ...(abort ? [abort] : [])]);
-      const config = parseConfig(await readFile(configFile, { encoding: "utf8", signal }));
-      if (!config.enabled) throw new Error("Subagent routing is disabled in router.json.");
-      if (tasks.length > 1 && tasks.some((task) => task.access === "workspace")) throw new Error("Run workspace tasks separately, one at a time.");
-      const results = await Promise.allSettled(tasks.map(async ({ brief, access }, index) => {
-        onUpdate?.({ content: [{ type: "text", text: `Task ${index + 1}: classifying` }], details: {} });
-        const decision = await choose(ctx, brief, config, signal);
-        const route = decision.route ?? "base fallback";
-        onUpdate?.({ content: [{ type: "text", text: `Task ${index + 1}: ${route} → ${decision.target.model} (${decision.target.thinking})` }], details: {} });
-        return runChild(ctx, brief, route, decision.target, decision.backend, access === "workspace", signal, onUpdate && ((progress) => {
-          const activity = progress.currentTool ? `child running ${progress.currentTool}` : "child reported progress";
-          onUpdate({ content: [{ type: "text", text: `Task ${index + 1}: ${activity}` }], details: {} });
-        }));
-      }));
-      return {
-        content: [{ type: "text", text: results.map((result, index) => `Task ${index + 1}: ${result.status === "fulfilled" ? result.value : `Failed: ${String(result.reason)}`}`).join("\n\n") }],
-        details: {},
-        isError: results.some((result) => result.status === "rejected"),
-      };
-    },
-  });
-
   async function runBrief(ctx: ExtensionCommandContext, task: string) {
     try {
       const config = parseConfig(await readFile(configFile, { encoding: "utf8", signal: session.signal }));
@@ -198,7 +167,7 @@ export default function router(pi: ExtensionAPI) {
         return;
       }
       const decision = await choose(ctx, task, config, session.signal);
-      const result = await runChild(ctx, task, decision.route ?? "base fallback", decision.target, decision.backend, false, session.signal);
+      const result = await runChild(ctx, task, decision, session.signal);
       ctx.ui.notify(result, "info");
     } catch (error) {
       ctx.ui.notify(`Router: ${String(error)}`, "error");
@@ -206,11 +175,11 @@ export default function router(pi: ExtensionAPI) {
   }
 
   const actions = [
-    { value: "Run a brief", label: "Run a brief", description: "Classify a task and start a worker" },
-    { value: "Rubric and settings", label: "Rubric and settings", description: "Browse routes, edit models, or toggle routing" },
-    { value: "Session history", label: "Session history", description: "Inspect routes and effective models used" },
-    { value: "Router status", label: "Router status", description: "Enable or disable new runs without reloading" },
-    { value: "Cost dashboard", label: "Cost dashboard", description: "Inspect router worker costs and estimated savings" },
+    { value: "Run a brief", label: "Run a brief", description: "Classify a task and start a text-only worker" },
+    { value: "Rubric and settings", label: "Rubric and settings", description: "Browse routes, edit models and thinking, or toggle routing" },
+    { value: "Session history", label: "Session history", description: "Inspect manual brief runs and older router receipts" },
+    { value: "Router status", label: "Router status", description: "Toggle model routing without disabling native delegation" },
+    { value: "Cost dashboard", label: "Cost dashboard", description: "Inspect saved router receipt costs and estimated savings" },
   ];
   pi.registerCommand(routerCommand, {
     description: "Open the inline subagent router workspace",
@@ -228,6 +197,10 @@ export default function router(pi: ExtensionAPI) {
             const task = brief.trim();
             if (!task) {
               ctx.ui.notify("Enter a nonempty task brief.", "warning");
+              break;
+            }
+            if (Buffer.byteLength(task, "utf8") > maxDelegationTaskBytes) {
+              ctx.ui.notify("Shorten the task brief to at most 1 MiB in UTF-8.", "warning");
               break;
             }
             await runBrief(ctx, task);

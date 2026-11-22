@@ -1,34 +1,90 @@
 # pi-subagent-model-router
 
-When routing is enabled, give Pi a normal text prompt. The base model plans actionable work, delegates through the routing matrix, and synthesizes the results. You don’t need to request a subagent or use a slash command.
+Pi decides whether to delegate and which agent to use. When it makes a supported native `subagent` call, this extension can select the **child's** model and thinking from `router.json`. It does not change the parent model, force delegation, or replace the native tool or agent catalog.
+
+```mermaid
+flowchart TD
+    accTitle: Native subagent model routing
+    accDescr: Pi decides whether to delegate and picks a persona from the native catalog. The router checks a direct subagent call before execution. It adds a model and thinking override only for a supported, conflict-free call. Otherwise pi-subagents receives the original arguments.
+
+    prompt["Your prompt"] --> parent["Pi parent plans the work"];
+    parent -->|"No delegation"| answer["Pi parent responds"];
+    parent -->|"Picks an agent from the native catalog"| agent_call["Native subagent call"];
+    agent_call --> check["Can the router safely add an override?"];
+    check -->|"Supported and conflict-free"| classify["Match the child brief to the routing rubric<br/>or use configured child fallback"];
+    classify -->|"Valid candidate"| override["Add model: provider/id:thinking"];
+    classify -->|"No valid candidate"| native["pi-subagents runs with native arguments"];
+    check -->|"Explicit, unsupported, or uncertain"| native;
+    override --> routed["pi-subagents runs with the model override"];
+    native --> answer;
+    routed --> answer;
+```
+
+## How it differs from other routing approaches
+
+The router makes a separate choice for each eligible native `subagent` call, not for the whole conversation turn:
+
+| | This router | Whole-turn model switching | Fixed roles or tier pools |
+| --- | --- | --- | --- |
+| Unit routed | The task brief of each eligible native `subagent` call | The whole prompt or turn | Work assigned to a predefined role or tier |
+| How a route is chosen | A classifier or optional `routing_model` matches the brief against `when_to_use` criteria you write in plain language | One model is picked for the turn | The role or tier determines the model |
+| What a route sets | The child's model and thinking level; the persona Pi picked is kept | A model for the turn | The model configured for that role or pool |
+| Final answer | Pi's parent, on its own unchanged model, uses the child result | The selected model answers directly | Depends on the setup |
+
+This is a design difference, not a benchmark. We make no claims about quality, speed, or cost compared with other approaches. Routing adds a classification step to eligible calls. Without a match, a configured child fallback can be used; otherwise native defaults apply.
 
 ## Setup
 
-Use Pi 1.5.2 and `pi-subagents` 0.89.1. Install the extension from npm:
-
-```sh
-pi install npm:pi-subagent-model-router@0.2.0
-```
-
-The router requires `pi-subagents` 0.89.1. If it is not already loaded in Pi, install it first:
+Use Pi 1.5.2 and load both extensions. The router's npm dependency does not load the `pi-subagents` extension into Pi. Install `pi-subagents` separately if it isn't already loaded:
 
 ```sh
 pi install npm:pi-subagents@0.89.1
 ```
 
-To run from this checkout instead:
+**Try this version now from a checkout:** see [Local smoke test](#local-smoke-test) for a run without changing your Pi settings. To install the checkout for use across workspaces, run `npm ci` and `pi install ./` from its root, then restart Pi. To undo it, find the source with `pi list` and pass it to `pi remove`.
+
+**After a release containing native routing is published**, install that release with `pi install npm:pi-subagent-model-router` instead of installing the checkout.
+
+1. **Chat models:** Sign in via Pi's `/login` or configure your provider's credentials. In **Rubric and settings**, replace any example route or `base_agent` model IDs that your Pi catalog or account doesn't support. Clear `base_agent` to let native calls keep their default model when no route fits.
+2. **Optional classifiers:** To use Jev, set `TYPESAFE_API_KEY` before starting Pi. OpenAI Decisions needs an OpenAI API key, not ChatGPT sign-in (Pi may need `/logout openai` before it will use `OPENAI_API_KEY`). Set `classifiers: []` or clear **Classifier order** to use neither. Configure a chat `routing_model` if you want classification without a native classifier.
+3. **Try a call:** Ask Pi to delegate a brief using the native `subagent` tool. For a repeatable routing test, name a known persona such as `scout` and omit `model` and other launch options. Inspect the native tool result or completion card. Pi can also decide to answer without delegating.
+
+Keep keys in Pi's supported credential sources, not in `router.json` or task briefs.
+
+### Local smoke test
+
+Load only this checkout and its pinned `pi-subagents` so that no other copy of the router (for example, an old symlink in `~/.pi/agent/extensions/`) loads alongside it. `-ne` skips discovered, configured and built-in extensions, including codemode; `subagent` calls made through codemode are nested and not routed.
 
 ```sh
-mkdir -p .pi/agents
-cp examples/router-spike-worker.md .pi/agents/
-pi -e ./src/index.ts
+npm ci
+# Shows other router copies that a normal `pi` start would also load. `-ne` below ignores them.
+ls -l ~/.pi/agent/extensions .pi/extensions 2>/dev/null | grep -i router
+pi -ne -e ./node_modules/pi-subagents/bundle/index.js -e ./src/index.ts \
+  --tools 'read,grep,find,ls,bash,subagent*'
 ```
 
-Trust this checkout when prompted so `pi-subagents` can discover the generic tool-free worker. Its blank `tools:` field is intentional. Text-only briefs use this worker. Tasks that need workspace access (including CLI commands and edits) use `pi-subagents`’ built-in `worker` in the current directory. Enable routing only where you trust those workspace tools and agent definitions; they are not a filesystem sandbox.
+The footer should show `Router: enabled`. Without `TYPESAFE_API_KEY` (Jev) or an OpenAI API key, classification needs a chat `routing_model`; otherwise every eligible call uses `base_agent`. Don't pass `--models`: scoped models make the router abstain. Then try:
 
-## Automatic delegation
+- **Routed:** “Use the subagent tool with the `scout` agent and don't set a model or other options: explain how `src/native-routing.ts` decides whether to add a model override. No changes.” With a working classifier, expect the `codebase_orientation` model (`openai-codex/gpt-6-luna`, `high`) in the native tool result or completion card, `scout` as the persona, and a parent turn on its original model. Naming the persona keeps the test repeatable. If you let Pi pick, it may guess a name that isn't in the catalog (for example `explorer`); the router abstains and pi-subagents reports an unknown agent. Retry with a listed persona such as `scout`.
+- **Fallback:** First use `/model` to select an authenticated parent model that differs from `base_agent` (with the example config, anything other than `openai-codex/gpt-6.2-sol` at `medium`). Then: “Use the subagent tool with the `delegate` agent and don't set a model or other options: recommend a side dish for a picnic.” `delegate` otherwise inherits the parent model, so the outcomes are distinguishable: the `base_agent` model means the call was eligible and no route was applied; the parent model means the router abstained (for example because of an explicit pin, `--models`, or a subagent model setting); any other model means a route matched. The classifier may still choose a route, so this test doesn't guarantee fallback. Clear `base_agent` and unmatched eligible calls keep the native default.
+- **Explicit pin:** “Delegate to the worker subagent with model `anthropic/claude-opus-5-5:low`: list the files in `src/`.” The router leaves the call unchanged, so expect the pinned model.
 
-The base model receives the delegation tool instead of direct execution tools for the turn. Simple conversation and clarifications can stay local. It can run up to three independent text tasks in parallel; workspace tasks are dispatched one at a time. Dependent tasks are delegated after the prerequisite results return. Progress appears on the delegation tool call, and completed attempts appear under **Session history**. Image prompts and extension-triggered turns are not automatically routed. Disabling routing preserves ordinary Pi prompt handling.
+The native result confirms the child's effective model and thinking level. It does not record which classifier ran or whether a model came from a route or from `base_agent`; infer that only when the models differ, as in the fallback test. Eligibility abstention (the call runs unchanged with its native default) differs from `base_agent` fallback (the call was eligible, but no usable route was found).
+
+The router does not record native runs in **Session history** or the **Cost dashboard**. **Run a brief** in `/subagent-router` is a separate, manual, text-only path.
+
+## Native routing: what changes and what doesn't
+
+The hook supports a direct, top-level `subagent` call from `pi-subagents` 0.89.1 with non-empty `agent` and `task` and optionally a boolean `async`. Both ordinary local background and foreground runs are supported. Pi can pick a built-in or a custom persona that the public launch preflight from the loaded tool's own package can resolve without ambiguity. The router changes only `model`, using pi-subagents' native `provider/id:thinking` suffix. Persona, tools, task, launch mode, and result handling stay native.
+
+The router leaves the call untouched when:
+
+- The call supplies a `model` (with or without a thinking suffix), any `options`, alternate `cwd`, `worktree`, or other fields besides `agent`, `task`, and `async`. This includes workflows, management, resumes and custom placement. Nested tool calls (including via codemode), slash commands, RPC launches and the delegation bridge are not routed.
+- The selected definition cannot be verified, has shadowed candidates, uses an external or unknown runner, or declares a model pin (including `inherit`), machine, launcher, or fast mode. Bundled persona thinking defaults are not model pins; the routing suffix supersedes them on an eligible call.
+- A Pi session has scoped models, or applicable user/trusted project settings contain a subagent model scope, model/provider/thinking defaults or limits, agent/provider override maps, or machine configuration. Project ancestors are checked conservatively without trying to reproduce settings precedence or evaluate scopes. A native capability ceiling, configured default worktree, custom runner binary/host package override, or unreadable/invalid policy inputs also cause abstention.
+- The router is disabled, unavailable, or cannot validate the launch or target. Targets must be available with configured authentication and support the requested thinking level. Virtual models and providers registered by parent extensions are excluded because a detached child may not share the parent's runtime.
+
+Abstention is not an error and does not block the native call. The router never launches or retries a native run itself. Use the native tool's result and diagnostics for launch failures. Verification is pre-execution, not an atomic guarantee against concurrent edits or later extension hooks, and configured credentials do not guarantee a successful provider request.
 
 ## Router workspace
 
@@ -36,30 +92,36 @@ Run `/subagent-router` in Pi. The home screen and its controls open inline in th
 
 In **Rubric and settings**, use ↑/↓ to preview a route’s criteria, model, and thinking level, and Enter to edit. In the model dropdown, type to filter Pi’s available chat models by name, provider, or ID. The thinking dropdown shows the levels supported by the selected model.
 
-From the home screen, select **Router status** → **Enabled** or **Disabled**, then confirm **Save**. This writes `enabled` to `router.json` and updates Pi’s footer immediately to `Router: enabled` or `Router: disabled`. You can also edit the flag directly; the footer refreshes on the next run or when opening router settings or status. While disabled, **Run a brief** does not call a classifier or start a worker. The config menu and history remain available. The same menu can add or remove routes, reorder classifiers, and set or clear the base and routing models. Select **When to use** to view or edit the full criteria. Each change is validated and requires save confirmation.
+From the home screen, select **Router status** → **Enabled** or **Disabled**, then confirm **Save**. This writes `enabled` to `router.json` and updates Pi’s footer immediately to `Router: enabled` or `Router: disabled`. You can also edit the flag directly; the footer refreshes on the next run or when opening router settings or status. While disabled, native `subagent` calls run with their original arguments, and **Run a brief** does not call a classifier or start a worker. The config menu and history remain available. The same menu can add or remove routes, reorder classifiers, and set or clear the child fallback (**Base model**, `base_agent`) and routing models. Select **When to use** to view or edit the full criteria. Each change is validated and requires save confirmation.
 
-The repo’s [`router.json`](router.json) remains the only routing config. The router reads it from the extension’s checkout for every brief, regardless of Pi’s working directory. Saved edits apply to the next run without reloading and don’t change a worker already running. No config path or persona is selected at runtime. Use provider-qualified model IDs available in your Pi session. OpenAI’s Decisions API requires an API key; ChatGPT sign-in does not support it.
+[`router.json`](router.json) is the router’s rubric and model configuration. The router reads it from the extension’s checkout for every brief, regardless of Pi’s working directory. Saved edits apply to the next run without reloading and don’t change a worker already running. Use provider-qualified model IDs available in your Pi session. OpenAI’s Decisions API requires an API key; ChatGPT sign-in does not support it.
 
 | Field | Meaning |
 | --- | --- |
 | `version` | Required; `1`. |
-| `enabled` | Optional boolean; defaults to `true`. Set to `false` to stop new router runs without unloading the extension or interrupting existing workers. |
+| `enabled` | Optional boolean; defaults to `true`. Set to `false` to stop new native model overrides and manual briefs. Native delegation and already-running children are unaffected. |
 | `routes` | 1–32 rows. Each has a unique lowercase `name` (letters, digits, underscores; start with a letter), a human-readable `label`, `when_to_use` criteria, a provider-qualified `model`, and `thinking`. |
-| `classifiers` | Optional ordered list of up to four classifier IDs; defaults to `typesafe/jev-latest`, then `openai/gpt-6-luna`. `[]` skips these services. |
+| `classifiers` | Optional ordered list of up to four provider-qualified classifier IDs from Pi's catalog; defaults to `typesafe/jev-latest`, then `openai/gpt-6-luna`. `[]` disables native classifiers. |
 | `routing_model` | Optional chat `{ "model": "provider/id", "thinking": "low" }` tried if no classifier can return a valid answer. |
-| `base_agent` | Optional `{ "model": "provider/id", "thinking": "off" }` for the orchestrator and fallback worker. On an enabled text turn, Pi selects this model and thinking for the session. If omitted, the current Pi settings are used. |
+| `base_agent` | Optional `{ "model": "provider/id", "thinking": "off" }` for child fallback only. Omit it to leave unmatched native calls unchanged. **Run a brief** instead falls back to the current Pi model. This never changes the parent. |
 
-Supported thinking settings are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; Pi may clamp a requested level to what the model supports. Put the level in `thinking`, not in the model ID.
+If your local config has a per-route `agent` key from an earlier checkout, remove it. The router ignores it like any unknown field, and saving through **Rubric and settings** drops it.
 
-The classifier receives the brief, route names, labels, and criteria—not worker model settings. It answers whether any criterion fits and, for multiple routes, which fits best. A fit below 0.7 or an unavailable selected worker goes straight to the base model; the router doesn't retry a valid abstention with another provider. Missing credentials, request failures, or invalid responses try the next backend. Pi shows the first base fallback warning of each session and labels every base fallback result. Each attempted routing backend has a 10-second deadline. The chosen worker also receives the brief. Use non-sensitive sample data for tests.
+Supported thinking settings are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; native routing abstains when the requested level is not supported by the candidate. Put the level in `thinking`, not in the model ID.
 
-The router does not impose a 90-second cutoff on workers. It waits for the `pi-subagents` result unless the tool call is cancelled or the Pi session shuts down. `pi-subagents` 0.89.1 has no unlimited foreground timeout, so the router requests its maximum (about 24.8 days). If the extension is not loaded, no worker response arrives; cancel the wait and check the setup above.
+The router already uses [Pi's native classifier API](https://docs.pi.dev/latest/models#use-classifier-models). Pi handles the model catalog, credential checks, and requests. No codemode or MCP setup is required, and classifiers don't appear in `/model`. To try another classifier, add its provider-qualified ID to **Classifier order** (for example, `openrouter/typesafe/jev-1.14`) and set up that provider's credentials in Pi. Available IDs vary with the installed Pi version and its catalog; the setup above targets Pi 1.5.2.
+
+The classifier receives the brief, route names, labels, and criteria—not worker model settings. Each attempted backend has a 10-second deadline. Missing credentials, request failures or invalid answers try the next backend. A fit below 0.7, unavailable matched chat model, or exhaustion of all backends uses the configured child fallback if usable. Neither classification nor fallback changes the selected persona.
+
+### Manual text-only briefs
+
+**Run a brief** is separate from native routing. It uses the public delegation bridge and the packaged [`router-spike-worker`](agents/router-spike-worker.md) with a zero-tool budget. Briefs must be at most 1 MiB after trimming and UTF-8 encoding. It does not expose a model tool or edit the parent prompt. If the worker is unknown, install the router as a Pi package or start in the trusted checkout root. Loading only `src/index.ts` from another workspace does not register its packaged agents. Check for settings that disable the agent if it is still missing. The manual bridge requests pi-subagents' maximum foreground timeout (about 24.8 days) and waits until completion or session shutdown. Native runs keep their own timeout and cancellation behavior.
 
 ## Validate software-engineering routes
 
 [`router.json`](router.json) includes three implementation tiers: Luna 6 (`low`) for localized edits, Sol 6.2 (`medium`) for multi-module work within one repo, and Sol 6.2 (`high`) for inherently complex changes that need product context across repos. Routine CLI and Git work uses Luna 6 (`low`); architecture discussions use Opus 5.5 (`medium`), LaTeX work uses Opus 5.5 (`medium`), and high-risk architecture or refactor planning uses Opus 5.5 (`high`).
 
-Submit one of the examples below as a normal Pi prompt. Alternatively, use `/subagent-router` → **Run a brief** to test routing with a tool-free worker.
+Ask Pi to send one of the examples below to a native subagent without an explicit model, or use `/subagent-router` → **Run a brief** to test classification with a tool-free worker (which cannot perform workspace steps).
 
 | Sample brief | Expected route |
 | --- | --- |
@@ -77,15 +139,15 @@ Submit one of the examples below as a normal Pi prompt. Alternatively, use `/sub
 | Explain how to benchmark a JSON encoder that doubled p95 latency under load. | `performance_analysis` |
 | Fix a LaTeX table that overflows a two-column paper and explain the typesetting change. | `latex_authoring` |
 | Draft a runbook for onboarding developers to our local build and test workflow. | `engineering_documentation` |
-| Recommend a side dish for a picnic. | Base fallback: no rubric match |
+| Recommend a side dish for a picnic. | No rubric match: `base_agent` child fallback, or native default if unset |
 
 ## See which models ran
 
-Open `/subagent-router` → **Session history** to see router requests on the active session branch, including the route, classifier, run ID when available, outcome, and requested versus effective model and thinking. A `submitted` or `unconfirmed` entry is not proof the worker ran. Receipts are stored in the Pi session and survive reload/resume for saved sessions. They do not include the brief or worker output and are not sent to the model.
+Open `/subagent-router` → **Session history** to see **Run a brief** requests (and older router receipts) on the active session branch, including the persona, route, classifier, run ID when available, outcome, and requested versus effective model and thinking. A `submitted` or `unconfirmed` entry is not proof the worker ran. Receipts are stored in the Pi session and survive reload/resume for saved sessions. They do not include the brief or worker output and are not sent to the model.
 
 History includes earlier runs with saved router receipts, but it cannot reconstruct missing receipts. It also counts router requests with attributable usage observations across all branches of the current Pi session. Each active-branch row can show the terminal response's reported input, output, cache-read and cache-write tokens and USD cost. These are observations, not verified totals or invoice amounts. `?` and `unknown` include zero-valued fields because the dependency can substitute zeros for missing data. Unidentified sessions, records inherited from a fork, older receipts without a session identity, missing or malformed reports, and ambiguous duplicate identities do not contribute observations. A count of zero means no eligible observations, not zero spend.
 
-**All-subagent totals and savings are not available with `pi-subagents` 0.89.1.** The structured delegation response covers only requests sent through that bridge. Its optional aggregate can lose missing-field information and does not include per-attempt model/pricing or prove all usage was captured. Pi exposes the session tree and stored messages, but not a complete inventory of child launches and their priced usage. The native `/subagent-cost` command (also available via the subagent RPC `cost` method) is a best-effort branch report: it reads tool results, completion records and optional artifacts, can fill missing fields with zeros, and does not report per-model rates or prove coverage of every launch. Use it, an original tool result, or a completion card to inspect ordinary `pi-subagents` runs outside the router; the router does not merge those results.
+**All-subagent totals and savings are not available with `pi-subagents` 0.89.1.** The structured delegation response covers only requests sent through that bridge. Its optional aggregate can lose missing-field information and does not include per-attempt model/pricing or prove all usage was captured. Pi exposes the session tree and stored messages, but not a complete inventory of child launches and their priced usage. The native `/subagent-cost` command (also available via the subagent RPC `cost` method) is a best-effort branch report: it reads tool results, completion records and optional artifacts, can fill missing fields with zeros, and does not report per-model rates or prove coverage of every launch. Use it, the native tool result, or a completion card to inspect native runs, including those routed by the hook; these do not generate router receipts.
 
 ## Cost dashboard
 
@@ -99,7 +161,7 @@ For a new completed worker with valid usage, the router tries the inferred defau
 
 Savings require at least one completed, attributed worker and full coverage with consistent, corroborated flat rates for every observed model. Legacy or ambiguous receipts, unsuccessful runs, missing files, incomplete usage, supplementary child charges, tiered rates and 1-hour cache writes can make savings unavailable without hiding reported totals.
 
-Coverage is the current session and up to 50 other sessions from Pi's default saved-session store, selected in Pi’s recent-activity order, across workspaces and all recorded branches. Files over 8 MiB or unreadable files are skipped; this is not lifetime coverage. The dashboard covers only **direct router workers**: it excludes the parent, routing calls, nested workers, and jobs started outside the router. Session and run identities prevent counting copied fork receipts as new spend. Accounting stays in local Pi session entries and records IDs, model names, counters and rates, not prompt or result text.
+Coverage is the current session and up to 50 other sessions from Pi's default saved-session store, selected in Pi’s recent-activity order, across workspaces and all recorded branches. Files over 8 MiB or unreadable files are skipped; this is not lifetime coverage. The dashboard covers only **Run a brief** and eligible older router-worker receipts. It excludes native tool runs (even when routed), the parent, classification calls, and nested workers. Session and run identities prevent counting copied fork receipts as new spend. Accounting stays in local Pi session entries and records IDs, model names, counters and rates, not prompt or result text.
 
 ## Development
 
@@ -109,7 +171,7 @@ npm run typecheck
 npm test
 ```
 
-Tests mock the model registry and delegation events. The coverage gate requires 100% of statements, branches, functions, and lines for each runtime source file. Live checks require provider credentials and are separate from the unit suite.
+Unit tests mock the model registry and delegation events. The offline integration test runs Pi 1.5.2 and pi-subagents 0.89.1 with a loopback model endpoint and verifies the child model and thinking received by it, without live credentials. The coverage gate requires 100% of statements, branches, functions, and lines for each runtime source file.
 
 ## Releasing to npm
 
