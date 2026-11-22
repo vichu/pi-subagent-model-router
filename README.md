@@ -41,9 +41,13 @@ Use Pi 1.5.2 and load both extensions. The router's npm dependency does not load
 pi install npm:pi-subagents@0.89.1
 ```
 
-**Try this version now from a checkout:** see [Local smoke test](#local-smoke-test) for a run without changing your Pi settings. To install the checkout for use across workspaces, run `npm ci` and `pi install ./` from its root, then restart Pi. To undo it, find the source with `pi list` and pass it to `pi remove`.
+Install the router release that includes native routing, then restart Pi:
 
-**After a release containing native routing is published**, install that release with `pi install npm:pi-subagent-model-router` instead of installing the checkout.
+```sh
+pi install npm:pi-subagent-model-router@0.3.0
+```
+
+To try a checkout without changing your Pi settings, see [Local smoke test](#local-smoke-test).
 
 1. **Chat models:** Sign in via Pi's `/login` or configure your provider's credentials. In **Rubric and settings**, replace any example route or `base_agent` model IDs that your Pi catalog or account doesn't support. Clear `base_agent` to let native calls keep their default model when no route fits.
 2. **Optional classifiers:** To use Jev, set `TYPESAFE_API_KEY` before starting Pi. OpenAI Decisions needs an OpenAI API key, not ChatGPT sign-in (Pi may need `/logout openai` before it will use `OPENAI_API_KEY`). Set `classifiers: []` or clear **Classifier order** to use neither. Configure a chat `routing_model` if you want classification without a native classifier.
