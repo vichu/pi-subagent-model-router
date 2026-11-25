@@ -3,27 +3,44 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 type RouterUi = ExtensionContext["ui"];
 export type RouterState = boolean | "unavailable" | "incompatible";
 
-// Pi keeps one UI context per session runner, so the last decision does not leak into another session.
-const shown = new WeakMap<RouterUi, { state?: RouterState; lastDecision?: string }>();
+type ShownStatus = { state?: RouterState; lastDecision?: string };
 
-function render(ui: RouterUi) {
-  const { state, lastDecision } = shown.get(ui)!;
-  if (state === undefined) return;
-  let status = "config unavailable";
-  if (state === "incompatible") status = "pi-subagents incompatible";
-  else if (state !== "unavailable") status = state ? "enabled" : "disabled";
-  // Disabled, unavailable, and incompatible states take precedence over the last decision.
-  const last = state === true && lastDecision ? ` · last: ${lastDecision}` : "";
-  ui.setStatus("pi-subagent-model-router", `Router: ${status}${last}`);
+// Pi keeps one UI context per session runner, so the last decision does not leak into another session.
+const shown = new WeakMap<RouterUi, ShownStatus>();
+
+function routerStateLabel(state: RouterState): string {
+  switch (state) {
+    case true:
+      return "enabled";
+    case false:
+      return "disabled";
+    case "unavailable":
+      return "config unavailable";
+    case "incompatible":
+      return "pi-subagents incompatible";
+    /* v8 ignore next 4 -- unreachable at runtime; fails typecheck when RouterState gains a variant. */
+    default: {
+      const _exhaustive: never = state;
+      return _exhaustive;
+    }
+  }
 }
 
-export function setRouterStatus(ui: RouterUi, enabled: RouterState) {
-  shown.set(ui, { ...shown.get(ui), state: enabled });
-  render(ui);
+function update(ui: RouterUi, change: ShownStatus) {
+  const current = { ...shown.get(ui), ...change };
+  shown.set(ui, current);
+  const { state, lastDecision } = current;
+  if (state === undefined) return;
+  // Disabled, unavailable, and incompatible states take precedence over the last decision.
+  const last = state === true && lastDecision ? ` · last: ${lastDecision}` : "";
+  ui.setStatus("pi-subagent-model-router", `Router: ${routerStateLabel(state)}${last}`);
+}
+
+export function setRouterStatus(ui: RouterUi, state: RouterState) {
+  update(ui, { state });
 }
 
 /** Shows a recorded routing decision once the router state is known to be enabled. */
 export function setRouterLastDecision(ui: RouterUi, lastDecision: string) {
-  shown.set(ui, { ...shown.get(ui), lastDecision });
-  render(ui);
+  update(ui, { lastDecision });
 }

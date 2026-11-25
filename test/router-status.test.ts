@@ -8,6 +8,23 @@ const shown = (ui: ReturnType<typeof makeUi>) => ui.setStatus.mock.calls.map(([k
   return text;
 });
 
+test.each([
+  [true, "Router: enabled"],
+  [false, "Router: disabled"],
+  ["unavailable", "Router: config unavailable"],
+  ["incompatible", "Router: pi-subagents incompatible"],
+] as const)("setRouterStatus labels state %s", (state, label) => {
+  const ui = makeUi();
+  setRouterStatus(ui, state);
+  expect(shown(ui)).toEqual([label]);
+});
+
+test("setRouterLastDecision before any router status does not throw or render", () => {
+  const ui = makeUi();
+  expect(() => setRouterLastDecision(ui, "fallback → base")).not.toThrow();
+  expect(ui.setStatus).not.toHaveBeenCalled();
+});
+
 test("setRouterStatus shows each router state", () => {
   const ui = makeUi();
   for (const state of [true, false, "unavailable", "incompatible"] as const) setRouterStatus(ui, state);
