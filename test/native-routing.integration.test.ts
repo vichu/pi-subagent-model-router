@@ -14,6 +14,7 @@ const run = promisify(execFile);
 test.each([
   { name: "default background", input: {}, worker: "worker", expected: "routed", effort: "low" },
   { name: "foreground", input: { async: false }, worker: "scout", expected: "routed", effort: "low" },
+  { name: "labeled foreground", input: { async: false, label: "Offline check" }, worker: "scout", expected: "routed", effort: "low" },
   { name: "project persona", input: { async: false }, worker: "local-reader", expected: "routed", effort: "low" },
   { name: "explicit model", input: { async: false, model: "stub/explicit:high" }, worker: "worker", expected: "explicit", effort: "high" },
   { name: "enforced scope", input: { async: false }, worker: "worker", expected: "parent", settings: { modelScope: { enforce: true, allow: ["inherit"] } } },
