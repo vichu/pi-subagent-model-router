@@ -8,6 +8,8 @@ export type ModelChoice = { model: string; thinking: Thinking };
 export type Route = ModelChoice & { name: string; label: string; when_to_use: string };
 export type RouterConfig = {
   enabled: boolean;
+  /** Stores full task text in routing decision entries. */
+  debug?: boolean;
   base_agent?: ModelChoice;
   routing_model?: ModelChoice;
   classifiers: string[];
@@ -48,6 +50,7 @@ export function parseConfig(json: string): RouterConfig {
   const config = object(JSON.parse(json), "config");
   if (config.version !== 1) throw new Error("config.version must be 1");
   if (config.enabled !== undefined && typeof config.enabled !== "boolean") throw new Error("config.enabled must be a boolean");
+  if (config.debug !== undefined && typeof config.debug !== "boolean") throw new Error("config.debug must be a boolean");
   if (!Array.isArray(config.routes) || config.routes.length < 1 || config.routes.length > 32) {
     throw new Error("config.routes must contain 1–32 routes");
   }
@@ -64,6 +67,7 @@ export function parseConfig(json: string): RouterConfig {
   if (!Array.isArray(classifiers) || classifiers.length > 4) throw new Error("config.classifiers must be an array of up to 4 classifier IDs");
   return {
     enabled: config.enabled ?? true,
+    debug: config.debug ?? false,
     routes,
     classifiers: classifiers.map((id, i) => modelId(id, `classifiers[${i}]`)),
     base_agent: config.base_agent === undefined ? undefined : choice(config.base_agent, "base_agent"),

@@ -1,7 +1,7 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { expect, test } from "vitest";
 import { reconcileChildCost, summarizeCosts, type CostEvidence, type Rates } from "../src/cost-accounting.ts";
-import { runEntryType, type RunUsage } from "../src/history.ts";
+import { decisionEntryType, runEntryType, type RunUsage } from "../src/history.ts";
 
 const rates = { input: 2, output: 4, cacheRead: 1, cacheWrite: 3 };
 const spend = (cost: number): RunUsage => ({ input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000, cacheWrite: 1_000_000, cost });
@@ -118,4 +118,14 @@ test("summarizeCosts uses wire totals for new receipts, including unattributed a
     unattributed: { ...wire, input: 2e6, output: 2e6, cacheRead: 2e6, cacheWrite: 2e6, cost: 10 },
     attribution: [{ model: "d/a", usage: observed }], savings: undefined,
   });
+});
+
+test("summarizeCosts ignores routing decision entries, even ones that share a receipt's request ID", () => {
+  const decision = (requestId: string) => ({ type: "custom", id: `decision-${requestId}`, customType: decisionEntryType, data: {
+    toolCallId: "call", at: "2026-01-01T00:00:00Z", sessionKey: "a", requestId, outcome: "routed", attempts: [], durationMs: 1, versions: {},
+    status: "completed", runId: requestId, usage: spend(99),
+  } }) as SessionEntry;
+  const receipts = done("a", "1", spend(10), modelEvidence("d/a", spend(10), rates));
+  expect(summarizeCosts([session("a", decision("1"), ...receipts, decision("2"))])).toEqual(summarizeCosts([session("a", ...receipts)]));
+  expect(summarizeCosts([session("a", decision("1"))]).rows).toEqual([]);
 });

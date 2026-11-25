@@ -5,12 +5,13 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter, type ExtensionAPI, type ExtensionContext, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import type { Details, SingleResult } from "pi-subagents/shared-types";
-import { parseConfig } from "./config.ts";
+import { parseConfig, type RouterConfig } from "./config.ts";
 import { captureChildCost } from "./cost-dashboard.ts";
-import { reportedRunUsage, type RunReceipt, runEntryType, runSessionKey } from "./history.ts";
-import { checkChatModel, determineRoute } from "./router.ts";
+import { type DecisionRecord, packageVersion, taskSummary } from "./decisions.ts";
+import { decisionEntryType, reportedRunUsage, type RunReceipt, runEntryType, runSessionKey } from "./history.ts";
+import { checkChatModel, determineRoute, type RoutingDecision } from "./router.ts";
 import { setRouterStatus } from "./router-status.ts";
 
 // Every top-level `subagent` parameter in the pi-subagents tool schema belongs to exactly one of these sets;
@@ -75,7 +76,8 @@ async function nativeApis(pi: ExtensionAPI, detected: { version?: string }) {
   return { resolveSubagentLaunchContract, resolveCurrentSubagentCapabilityCeiling };
 }
 
-function hasSettingsConflict(agentDirs: readonly string[], cwd: string, trusted: boolean) {
+// Returns the first settings file that may change native model selection.
+function settingsConflictPath(agentDirs: readonly string[], cwd: string, trusted: boolean) {
   const paths = new Set(agentDirs.map((dir) => join(dir, "settings.json")));
   if (trusted) {
     // Overapproximate nearest-root and git-root selection, including symlinks.
@@ -88,7 +90,7 @@ function hasSettingsConflict(agentDirs: readonly string[], cwd: string, trusted:
       }
     }
   }
-  return [...paths].some((path) => {
+  return [...paths].find((path) => {
     const settings = readSettings(path);
     if (!Object.hasOwn(settings, "subagents")) return false;
     const subagents = settings.subagents;
@@ -129,6 +131,33 @@ function nativeRunStatus(details: Partial<Details>, child: SingleResult, isError
   return "completed";
 }
 
+export type RoutingOutcome = "routed" | "fallback" | "skipped" | "error";
+// Why the hook left a `subagent` call unchanged. Every early return of the hook maps to one reason.
+// not_subagent_tool, nested_call, and child_runtime are never recorded as decisions.
+export type RoutingSkipReason =
+  | "not_subagent_tool" | "nested_call" | "child_runtime" | "native_placement_config" | "invalid_params" | "explicit_model"
+  | "deliberate_params" | "aborted" | "config_unavailable" | "routing_disabled" | "unrecognized_params" | "pi_subagents_incompatible"
+  | "settings_conflict" | "scoped_models" | "capability_ceiling" | "baseline_contract" | "agent_pins_model" | "worker_model_unusable"
+  | "candidate_contract_mismatch";
+type HookResult =
+  | { outcome: "routed" | "fallback" }
+  | { outcome: "skipped"; reason: RoutingSkipReason; detail?: string }
+  // detail names the step that threw; error messages may contain provider output.
+  | { outcome: "error"; detail: string };
+// Facts gathered while deciding, recorded even when a later step abstains.
+type DecisionTrace = {
+  step: string;
+  debug: boolean;
+  sessionKey?: string;
+  piSubagents?: string;
+  routing?: RoutingDecision;
+  requestId?: string;
+};
+
+const routerVersion = packageVersion(new URL("../package.json", import.meta.url));
+const skip = (reason: RoutingSkipReason, detail?: string): HookResult => ({ outcome: "skipped", reason, detail });
+const errorDiagnostic = (diagnostics: readonly { severity: string }[]) => diagnostics.some(({ severity }) => severity === "error");
+
 export function registerNativeRouting(pi: ExtensionAPI, configFile: URL, session: AbortSignal) {
   const home = process.env.HOME || process.env.USERPROFILE || homedir();
   const configuredDir = process.env.PI_CODING_AGENT_DIR;
@@ -141,81 +170,162 @@ export function registerNativeRouting(pi: ExtensionAPI, configFile: URL, session
   // Submitted receipts wait for a terminal foreground result so that unfinished runs leave no unresolved receipt.
   const routedCalls = new Map<string, RunReceipt>();
   session.addEventListener("abort", () => routedCalls.clear(), { once: true });
-  pi.on("tool_call", async (event, ctx) => {
-    if (event.toolName !== "subagent" || event.parentToolCallId || configuredPlacement) return;
+
+  async function routeCall(event: ToolCallEvent, ctx: ExtensionContext, signal: AbortSignal, trace: DecisionTrace): Promise<HookResult> {
+    if (process.env.PI_SUBAGENT_CHILD === "1" || process.env.PI_SUBAGENT_PI_BINARY || process.env.PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT) {
+      return skip("child_runtime");
+    }
+    trace.sessionKey = runSessionKey(ctx.sessionManager);
+    if (configuredPlacement) return skip("native_placement_config");
     const input = event.input as Record<string, unknown>;
     const { agent, task, async, label } = input;
-    if (typeof agent !== "string" || !agent.trim() || typeof task !== "string" || !task.trim() ||
-        (async !== undefined && typeof async !== "boolean") || (label !== undefined && typeof label !== "string")) return;
+    const invalid = Object.entries({
+      agent: typeof agent !== "string" || !agent.trim(), task: typeof task !== "string" || !task.trim(),
+      async: async !== undefined && typeof async !== "boolean", label: label !== undefined && typeof label !== "string",
+    }).flatMap(([key, bad]) => bad ? [key] : []);
+    if (typeof agent !== "string" || typeof task !== "string" || invalid.length) return skip("invalid_params", invalid.join(", "));
     const otherKeys = Object.keys(input).filter((key) => !routableSubagentKeys.has(key));
-    if (otherKeys.some((key) => nonRoutableSubagentKeys.has(key))) return;
-    const signal = AbortSignal.any([session, ...(ctx.signal ? [ctx.signal] : [])]);
+    const deliberate = otherKeys.filter((key) => nonRoutableSubagentKeys.has(key));
+    if (deliberate.length) return skip(deliberate.includes("model") ? "explicit_model" : "deliberate_params", deliberate.join(", "));
+    if (signal.aborted) return skip("aborted");
+    trace.step = "config";
+    let config: RouterConfig;
     try {
-      if (signal.aborted || process.env.PI_SUBAGENT_CHILD === "1" || process.env.PI_SUBAGENT_PI_BINARY ||
-          process.env.PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT) return;
-      const config = parseConfig(await readFile(configFile, { encoding: "utf8", signal }));
-      setRouterStatus(ctx.ui, config.enabled);
-      if (!config.enabled) return;
-      if (otherKeys.length) {
-        // A parameter added by a newer pi-subagents may change launch semantics, so abstain visibly.
-        if (!unrecognizedKeysReported) {
-          unrecognizedKeysReported = true;
-          ctx.ui.notify(`Router skipped subagent call: unrecognized parameter(s) ${otherKeys.join(", ")}. Update pi-subagent-model-router.`, "warning");
-        }
-        return;
+      config = parseConfig(await readFile(configFile, { encoding: "utf8", signal }));
+    } catch (error) {
+      if (signal.aborted) throw error;
+      return skip("config_unavailable");
+    }
+    trace.debug = config.debug === true;
+    setRouterStatus(ctx.ui, config.enabled);
+    if (!config.enabled) return skip("routing_disabled");
+    if (otherKeys.length) {
+      // A parameter added by a newer pi-subagents may change launch semantics, so abstain visibly.
+      if (!unrecognizedKeysReported) {
+        unrecognizedKeysReported = true;
+        ctx.ui.notify(`Router skipped subagent call: unrecognized parameter(s) ${otherKeys.join(", ")}. Update pi-subagent-model-router.`, "warning");
       }
-      const detected: { version?: string } = {};
-      const apis = await nativeApis(pi, detected).catch(() => undefined);
-      if (!apis) {
-        setRouterStatus(ctx.ui, "incompatible");
-        if (!incompatibilityReported) {
-          incompatibilityReported = true;
-          ctx.ui.notify(`Native subagent routing is off: the loaded pi-subagents (${detected.version ? `version ${detected.version}` : "version unknown"}) ` +
-            "does not expose the integration this router expects. Subagent calls run unchanged with native model defaults. " +
-            "Update pi-subagent-model-router or report the incompatibility.", "warning");
-        }
-        return;
+      return skip("unrecognized_params", otherKeys.join(", "));
+    }
+    trace.step = "pi_subagents";
+    const detected: { version?: string } = {};
+    const apis = await nativeApis(pi, detected).catch(() => undefined);
+    trace.piSubagents = detected.version;
+    if (!apis) {
+      setRouterStatus(ctx.ui, "incompatible");
+      if (!incompatibilityReported) {
+        incompatibilityReported = true;
+        ctx.ui.notify(`Native subagent routing is off: the loaded pi-subagents (${detected.version ? `version ${detected.version}` : "version unknown"}) ` +
+          "does not expose the integration this router expects. Subagent calls run unchanged with native model defaults. " +
+          "Update pi-subagent-model-router or report the incompatibility.", "warning");
       }
-      const { resolveSubagentLaunchContract, resolveCurrentSubagentCapabilityCeiling } = apis;
-      const projectTrusted = ctx.isProjectTrusted();
-      const sessionId = ctx.sessionManager.getSessionId();
-      const hasConflict = () => hasSettingsConflict(agentDirs, ctx.cwd, projectTrusted) || hasNativePlacementConfig(agentDirs) ||
-        ctx.scopedModels.length || resolveCurrentSubagentCapabilityCeiling(sessionId);
-      if (hasConflict()) return;
+      return skip("pi_subagents_incompatible");
+    }
+    const { resolveSubagentLaunchContract, resolveCurrentSubagentCapabilityCeiling } = apis;
+    const projectTrusted = ctx.isProjectTrusted();
+    const sessionId = ctx.sessionManager.getSessionId();
+    const conflict = () => {
+      trace.step = "settings";
+      const settingsPath = settingsConflictPath(agentDirs, ctx.cwd, projectTrusted);
+      if (settingsPath) return skip("settings_conflict", settingsPath);
+      if (hasNativePlacementConfig(agentDirs)) return skip("native_placement_config");
+      if (ctx.scopedModels.length) return skip("scoped_models");
+      if (resolveCurrentSubagentCapabilityCeiling(sessionId)) return skip("capability_ceiling");
+    };
+    const initialConflict = conflict();
+    if (initialConflict) return initialConflict;
 
-      const registry = ctx.modelRegistry;
-      const availableModels = registry.getAvailable();
-      const lookup = {
-        agent, task, cwd: ctx.cwd, projectTrusted, preferredProvider: ctx.model?.provider,
-        parentSessionId: sessionId, parentSessionFile: ctx.sessionManager.getSessionFile(),
-        parentLeafId: ctx.sessionManager.getLeafId(), availableModels,
-        knownProviders: () => registry.getAll().map(({ provider }) => provider), runtimeSnapshotHost: pi,
-      };
-      // With no parent model passed, a configured model does not look like inheritance.
-      const baseline = await resolveSubagentLaunchContract(lookup);
-      if (!baseline.ok || baseline.contract.model || baseline.contract.thinkingCeiling || baseline.contract.agent.shadowedCandidates.length ||
-          baseline.contract.diagnostics.some(({ severity }) => severity === "error")) return;
-      const { frontmatter } = parseFrontmatter(readFileSync(baseline.contract.agent.filePath, "utf8"));
-      const runner: unknown = frontmatter.runner;
-      if ((runner !== undefined && (!isRecord(runner) || runner.type !== "pi")) ||
-          ["model", "machine", "launcher", "fast"].some((key) => Object.hasOwn(frontmatter, key))) return;
+    const registry = ctx.modelRegistry;
+    const availableModels = registry.getAvailable();
+    const lookup = {
+      agent, task, cwd: ctx.cwd, projectTrusted, preferredProvider: ctx.model?.provider,
+      parentSessionId: sessionId, parentSessionFile: ctx.sessionManager.getSessionFile(),
+      parentLeafId: ctx.sessionManager.getLeafId(), availableModels,
+      knownProviders: () => registry.getAll().map(({ provider }) => provider), runtimeSnapshotHost: pi,
+    };
+    // With no parent model passed, a configured model does not look like inheritance.
+    trace.step = "baseline_preflight";
+    const baseline = await resolveSubagentLaunchContract(lookup);
+    if (!baseline.ok) return skip("baseline_contract", `preflight_failed:${baseline.code}`);
+    const { contract } = baseline;
+    const baselineIssue = contract.model ? "explicit_model" : contract.thinkingCeiling ? "thinking_ceiling"
+      : contract.agent.shadowedCandidates.length ? "shadowed_agent" : errorDiagnostic(contract.diagnostics) ? "diagnostic_error" : undefined;
+    if (baselineIssue) return skip("baseline_contract", baselineIssue);
+    trace.step = "agent_definition";
+    const { frontmatter } = parseFrontmatter(readFileSync(contract.agent.filePath, "utf8"));
+    const runner: unknown = frontmatter.runner;
+    if (runner !== undefined && (!isRecord(runner) || runner.type !== "pi")) return skip("agent_pins_model", "runner");
+    const pinnedKey = ["model", "machine", "launcher", "fast"].find((key) => Object.hasOwn(frontmatter, key));
+    if (pinnedKey) return skip("agent_pins_model", pinnedKey);
 
-      const { target, route, backend } = await determineRoute(config, task, registry, undefined, signal);
-      const { model } = checkChatModel(registry, target.model);
-      // A detached child may not share providers registered by parent extensions.
-      if (!model || model.api === "pi-virtual" || registry.getRegisteredProviderIds().includes(model.provider) ||
-          !getSupportedThinkingLevels(model).includes(target.thinking)) return;
-      const override = `${target.model}:${target.thinking}`;
-      const candidate = await resolveSubagentLaunchContract({ ...lookup, model: override });
-      if (!candidate.ok || candidate.contract.model !== override || candidate.contract.agent.definitionDigest !== baseline.contract.agent.definitionDigest ||
-          candidate.contract.diagnostics.some(({ severity }) => severity === "error") || signal.aborted || hasConflict()) return;
-      input.model = override;
-      const sessionKey = runSessionKey(ctx.sessionManager);
-      if (sessionKey) {
-        routedCalls.set(event.toolCallId, { requestId: randomUUID(), sessionKey, agent, route: route ?? "base fallback", backend, requested: target, status: "submitted" });
-      }
+    trace.step = "routing";
+    trace.routing = await determineRoute(config, task, registry, undefined, signal);
+    const { target, route, backend } = trace.routing;
+    const { model, unavailable } = checkChatModel(registry, target.model);
+    // A detached child may not share providers registered by parent extensions.
+    const unusable = !model ? unavailable : model.api === "pi-virtual" ? "pi_virtual"
+      : registry.getRegisteredProviderIds().includes(model.provider) ? "registered_provider"
+      : !getSupportedThinkingLevels(model).includes(target.thinking) ? "thinking_unsupported" : undefined;
+    if (unusable) return skip("worker_model_unusable", unusable);
+    const override = `${target.model}:${target.thinking}`;
+    trace.step = "candidate_preflight";
+    const candidate = await resolveSubagentLaunchContract({ ...lookup, model: override });
+    const mismatch = !candidate.ok ? `preflight_failed:${candidate.code}` : candidate.contract.model !== override ? "model"
+      : candidate.contract.agent.definitionDigest !== contract.agent.definitionDigest ? "agent_definition"
+      : errorDiagnostic(candidate.contract.diagnostics) ? "diagnostic_error" : undefined;
+    if (mismatch) return skip("candidate_contract_mismatch", mismatch);
+    if (signal.aborted) return skip("aborted");
+    const lateConflict = conflict();
+    if (lateConflict) return lateConflict;
+    input.model = override;
+    if (trace.sessionKey) {
+      trace.requestId = randomUUID();
+      routedCalls.set(event.toolCallId, { requestId: trace.requestId, sessionKey: trace.sessionKey, agent, route: route ?? "base fallback", backend, requested: target, status: "submitted" });
+    }
+    return { outcome: route ? "routed" : "fallback" };
+  }
+
+  function recordDecision(event: ToolCallEvent, result: HookResult, trace: DecisionTrace, startedAt: number) {
+    const { agent, task, label } = event.input as Record<string, unknown>;
+    const routing = trace.routing;
+    pi.appendEntry<DecisionRecord>(decisionEntryType, {
+      toolCallId: event.toolCallId,
+      at: new Date().toISOString(),
+      sessionKey: trace.sessionKey,
+      agent: typeof agent === "string" ? agent : undefined,
+      label: typeof label === "string" ? label : undefined,
+      task: typeof task === "string" ? taskSummary(task, trace.debug) : undefined,
+      outcome: result.outcome,
+      reason: result.outcome === "skipped" ? result.reason : undefined,
+      detail: result.outcome === "skipped" || result.outcome === "error" ? result.detail : undefined,
+      attempts: routing?.attempts ?? [],
+      route: routing?.route,
+      backend: routing?.backend,
+      model: routing?.target.model,
+      thinking: routing?.target.thinking,
+      requestId: trace.requestId,
+      durationMs: Math.round(performance.now() - startedAt),
+      versions: { router: routerVersion, piSubagents: trace.piSubagents },
+    });
+  }
+
+  pi.on("tool_call", async (event, ctx) => {
+    if (event.toolName !== "subagent" || event.parentToolCallId) return; // not_subagent_tool, nested_call
+    const startedAt = performance.now();
+    const trace: DecisionTrace = { step: "params", debug: false };
+    const signal = AbortSignal.any([session, ...(ctx.signal ? [ctx.signal] : [])]);
+    let result: HookResult;
+    try {
+      result = await routeCall(event, ctx, signal, trace);
     } catch {
       // Pi blocks execution if a tool_call hook throws. Routing must abstain instead.
+      result = signal.aborted ? skip("aborted") : { outcome: "error", detail: trace.step };
+    }
+    if (result.outcome === "skipped" && result.reason === "child_runtime") return;
+    try {
+      recordDecision(event, result, trace, startedAt);
+    } catch {
+      // The decision log is diagnostic; a failed write must not block the subagent call.
     }
   });
   // Pi emits this for every finalized call, including blocked or aborted ones that skip tool_result.
