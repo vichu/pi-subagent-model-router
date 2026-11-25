@@ -27,7 +27,8 @@ function setup() {
 
 test("asks for fit and task category, but never sends worker model names or settings", async () => {
   const { run, classify } = setup();
-  expect(await run()).toEqual({ route: "writer", target: { model: writer.model, thinking: writer.thinking }, notes: [], backend: "p/jev" });
+  expect(await run()).toEqual({ route: "writer", target: { model: writer.model, thinking: writer.thinking }, notes: [], backend: "p/jev",
+    attempts: [{ backend: "p/jev", kind: "classifier", result: "route", fit: 0.9, route: "writer", ms: expect.any(Number) }] });
   const request = classify.mock.calls[0][1];
   expect(request.state).toEqual({ task: "Draft a note", routes: { writer: "Writer: Draft prose", analyst: "Writer: Analyze a topic" } });
   expect(request.questions).toMatchObject({ fits: { type: "bool" }, route: { type: "choice" } });
@@ -173,4 +174,81 @@ test("explains when the selected chat model's provider is not loaded", async () 
   find.mockReturnValueOnce(undefined as never);
   getProvider.mockReturnValueOnce(undefined);
   expect(await run()).toMatchObject({ route: null, notes: [expect.stringContaining("Provider p for chat model p/writer is not loaded"), expect.any(String)] });
+});
+
+const attempt = (backend: string, kind: string, result: string, extra: Record<string, unknown> = {}) => ({ backend, kind, result, ...extra, ms: expect.any(Number) });
+const decisions = attempt("q/decisions", "classifier", "route", { fit: 0.9, route: "writer" });
+
+test.each([
+  [{ stopReason: "error" }, { error: "incomplete" }, "failed"],
+  [{ stopReason: "stop", answers: {} }, { error: "invalid_fit" }, "invalid"],
+  [classifierResult(NaN), { error: "invalid_fit" }, "invalid"],
+  [classifierResult(1, {}), { fit: 1, error: "invalid_route" }, "invalid"],
+  [classifierResult(1, { type: "choice", choice: "invented" }), { fit: 1, error: "invalid_route" }, "invalid"],
+])("traces a bad classifier response as an attempt without its raw route text %#", async (answer, extra, result) => {
+  const { run, classify } = setup();
+  classify.mockResolvedValueOnce(answer);
+  const { attempts } = await run();
+  expect(attempts).toEqual([attempt("p/jev", "classifier", result, extra), decisions]);
+  expect(JSON.stringify(attempts)).not.toContain("invented");
+  expect(attempts.every(({ ms }) => Number.isInteger(ms) && ms >= 0)).toBe(true);
+});
+
+test.each([
+  ["provider_not_loaded", false, false], ["model_not_in_catalog", true, false], ["no_auth", true, true],
+] as const)("traces an unavailable classifier as %s", async (error, knownProvider, inCatalog) => {
+  const { run, getAvailableOfType, getProvider, findOfType } = setup();
+  getAvailableOfType.mockResolvedValueOnce([]);
+  if (!knownProvider) getProvider.mockReturnValueOnce(undefined);
+  if (!inCatalog) findOfType.mockReturnValueOnce(undefined);
+  expect((await run()).attempts).toEqual([attempt("p/jev", "classifier", "unavailable", { error }), decisions]);
+});
+
+test.each([["request_failed", false], ["timeout", true]] as const)("traces a classifier %s", async (error, timedOut) => {
+  const { run, getAvailableOfType } = setup();
+  if (timedOut) vi.spyOn(AbortSignal, "timeout").mockReturnValueOnce(AbortSignal.abort());
+  else getAvailableOfType.mockRejectedValueOnce(new Error("provider error"));
+  expect((await run()).attempts).toEqual([attempt("p/jev", "classifier", "failed", { error }), decisions]);
+});
+
+test("traces a classifier abstention with its fit", async () => {
+  const { run, classify } = setup();
+  classify.mockResolvedValue(classifierResult(0.69));
+  expect(await run()).toMatchObject({ route: null, attempts: [attempt("p/jev", "classifier", "abstain", { fit: 0.69 })] });
+});
+
+test.each([["no_auth", true], ["model_not_in_catalog", false]] as const)("traces a selected route whose worker model is unavailable (%s)", async (error, known) => {
+  const { run, find, hasConfiguredAuth } = setup();
+  if (known) hasConfiguredAuth.mockReturnValue(false);
+  else find.mockReturnValueOnce(undefined as never);
+  expect(await run()).toMatchObject({ route: null, backend: "p/jev",
+    attempts: [attempt("p/jev", "classifier", "route", { fit: 0.9, route: "writer", error: `worker_${error}` })] });
+});
+
+test.each([
+  ["route", { stopReason: "stop", content: [{ type: "text", text: "writer" }] }, { route: "writer" }],
+  ["abstain", { stopReason: "stop", content: [{ type: "text", text: "no_match" }] }, {}],
+  ["invalid", { stopReason: "stop", content: [{ type: "text", text: "secret provider text" }] }, { error: "invalid_route" }],
+  ["failed", { stopReason: "error", content: [] }, { error: "incomplete" }],
+] as const)("traces a routing model %s", async (result, response, extra) => {
+  const { run, result: stream } = setup();
+  stream.mockResolvedValue(response);
+  const { attempts } = await run({ ...config, classifiers: [], routing_model: base });
+  expect(attempts).toEqual([attempt("p/base", "routing_model", result, extra)]);
+  expect(JSON.stringify(attempts)).not.toContain("secret");
+});
+
+test.each([["request_failed", false], ["timeout", true]] as const)("traces a routing model %s", async (error, timedOut) => {
+  const { run, result } = setup();
+  if (timedOut) vi.spyOn(AbortSignal, "timeout").mockReturnValueOnce(AbortSignal.abort());
+  result.mockRejectedValue(new Error("provider said: token sk-secret"));
+  const { attempts } = await run({ ...config, classifiers: [], routing_model: base });
+  expect(attempts).toEqual([attempt("p/base", "routing_model", "failed", { error })]);
+  expect(JSON.stringify(attempts)).not.toContain("secret");
+});
+
+test("traces an unavailable routing model", async () => {
+  const { run, hasConfiguredAuth } = setup();
+  hasConfiguredAuth.mockReturnValue(false);
+  expect((await run({ ...config, classifiers: [], routing_model: base })).attempts).toEqual([attempt("p/base", "routing_model", "unavailable", { error: "no_auth" })]);
 });

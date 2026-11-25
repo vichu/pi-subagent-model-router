@@ -5,6 +5,8 @@ import type { CostEvidence } from "./cost-accounting.ts";
 import type { ModelChoice } from "./config.ts";
 
 export const runEntryType = "pi-subagent-model-router:run:v1";
+// Written by the native routing hook for every recorded routing decision; never read by cost accounting.
+export const decisionEntryType = "pi-subagent-model-router:decision:v1";
 
 export type RunReceipt = {
   requestId: string;
