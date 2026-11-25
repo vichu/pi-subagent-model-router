@@ -13,7 +13,15 @@ import { reportedRunUsage, type RunReceipt, runEntryType, runSessionKey } from "
 import { checkChatModel, determineRoute } from "./router.ts";
 import { setRouterStatus } from "./router-status.ts";
 
-const nativeLaunchKeys = new Set(["agent", "task", "async"]);
+// Every top-level `subagent` parameter in the pi-subagents tool schema belongs to exactly one of these sets;
+// test/subagent-schema.contract.test.ts fails when the installed schema adds an unclassified key.
+// Routable keys form a plain launch. `label` only names the run in listings and child session titles.
+export const routableSubagentKeys: ReadonlySet<string> = new Set(["agent", "task", "async", "label"]);
+// Explicit model, workflow, placement, output, management, and option keys. Calls that use them abstain silently.
+// `tasks` and `chain` replace `workflow` and `args` when pi-subagents disables workflow scripts.
+export const nonRoutableSubagentKeys: ReadonlySet<string> = new Set([
+  "model", "workflow", "args", "tasks", "chain", "cwd", "worktree", "output", "action", "id", "message", "options",
+]);
 const conflictKeys = ["modelScope", "defaultModel", "defaultProvider", "defaultThinking", "disableThinking", "maxThinking", "agentOverrides", "agentOverridesByProvider", "machines"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -129,15 +137,18 @@ export function registerNativeRouting(pi: ExtensionAPI, configFile: URL, session
   const agentDirs = [...new Set([getAgentDir(), nativeAgentDir])];
   const configuredPlacement = nativePlacementAtRegistration(agentDirs);
   let incompatibilityReported = false;
+  let unrecognizedKeysReported = false;
   // Submitted receipts wait for a terminal foreground result so that unfinished runs leave no unresolved receipt.
   const routedCalls = new Map<string, RunReceipt>();
   session.addEventListener("abort", () => routedCalls.clear(), { once: true });
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "subagent" || event.parentToolCallId || configuredPlacement) return;
     const input = event.input as Record<string, unknown>;
-    const { agent, task, async } = input;
+    const { agent, task, async, label } = input;
     if (typeof agent !== "string" || !agent.trim() || typeof task !== "string" || !task.trim() ||
-        (async !== undefined && typeof async !== "boolean") || Object.keys(input).some((key) => !nativeLaunchKeys.has(key))) return;
+        (async !== undefined && typeof async !== "boolean") || (label !== undefined && typeof label !== "string")) return;
+    const otherKeys = Object.keys(input).filter((key) => !routableSubagentKeys.has(key));
+    if (otherKeys.some((key) => nonRoutableSubagentKeys.has(key))) return;
     const signal = AbortSignal.any([session, ...(ctx.signal ? [ctx.signal] : [])]);
     try {
       if (signal.aborted || process.env.PI_SUBAGENT_CHILD === "1" || process.env.PI_SUBAGENT_PI_BINARY ||
@@ -145,6 +156,14 @@ export function registerNativeRouting(pi: ExtensionAPI, configFile: URL, session
       const config = parseConfig(await readFile(configFile, { encoding: "utf8", signal }));
       setRouterStatus(ctx.ui, config.enabled);
       if (!config.enabled) return;
+      if (otherKeys.length) {
+        // A parameter added by a newer pi-subagents may change launch semantics, so abstain visibly.
+        if (!unrecognizedKeysReported) {
+          unrecognizedKeysReported = true;
+          ctx.ui.notify(`Router skipped subagent call: unrecognized parameter(s) ${otherKeys.join(", ")}. Update pi-subagent-model-router.`, "warning");
+        }
+        return;
+      }
       const detected: { version?: string } = {};
       const apis = await nativeApis(pi, detected).catch(() => undefined);
       if (!apis) {

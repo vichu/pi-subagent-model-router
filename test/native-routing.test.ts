@@ -110,8 +110,42 @@ test("sets only the native model argument and doesn't impose an agent or run mod
   ]);
 });
 
+test("routes a labeled call and keeps the label", async () => {
+  const { call, ctx } = await setup();
+  const labeled = { ...nativeCall, async: true, label: "Describe sample" };
+  expect(await call(labeled)).toEqual({ ...labeled, model: "demo/routed:low" });
+  expect(ctx.ui.notify).not.toHaveBeenCalled();
+});
+
+test("abstains silently on a deliberate model and visibly, once per session, on an unrecognized parameter", async () => {
+  const { call, ctx, getAllTools, register } = await setup();
+  const explicit = { ...nativeCall, model: "demo/explicit:high", label: "Pinned" };
+  expect(await call(explicit)).toEqual(explicit);
+  expect(ctx.ui.notify).not.toHaveBeenCalled();
+  const unknown = { ...nativeCall, label: "Describe sample", priority: "high" };
+  expect(await call(unknown)).toEqual(unknown);
+  expect(await call({ ...nativeCall, other: 1 })).toEqual({ ...nativeCall, other: 1 });
+  expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
+  expect(ctx.ui.notify).toHaveBeenCalledWith("Router skipped subagent call: unrecognized parameter(s) priority. Update pi-subagent-model-router.", "warning");
+  expect(getAllTools).not.toHaveBeenCalled();
+  expect(preview).not.toHaveBeenCalled();
+  register();
+  expect(await call({ ...nativeCall, priority: "high", other: 1 })).toEqual({ ...nativeCall, priority: "high", other: 1 });
+  expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("parameter(s) priority, other."), "warning");
+  expect(ctx.ui.notify).toHaveBeenCalledTimes(2);
+});
+
+test("does not report an unrecognized parameter when routing is disabled or the call is otherwise unroutable", async () => {
+  const { call, ctx, write, config, configFile } = await setup();
+  expect(await call({ ...nativeCall, workflow: true, priority: "high" })).toEqual({ ...nativeCall, workflow: true, priority: "high" });
+  expect(await call({ agent: "custom-persona", priority: "high" })).toEqual({ agent: "custom-persona", priority: "high" });
+  await write(configFile, { ...config, enabled: false });
+  expect(await call({ ...nativeCall, priority: "high" })).toEqual({ ...nativeCall, priority: "high" });
+  expect(ctx.ui.notify).not.toHaveBeenCalled();
+});
+
 test.each([
-  { agent: false }, { agent: " " }, { task: false }, { task: " " }, { async: "true" }, { model: "demo/explicit:high" },
+  { agent: false }, { agent: " " }, { task: false }, { task: " " }, { async: "true" }, { label: 5 }, { label: null }, { model: "demo/explicit:high" },
   { workflow: true }, { action: "list" }, { options: { machine: "remote" } }, { worktree: true }, { cwd: "/elsewhere" }, { chain: [] },
 ])("leaves unsupported or explicit input unchanged: %j", async (patch) => {
   const { call, getAllTools } = await setup();
