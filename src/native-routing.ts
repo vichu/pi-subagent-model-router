@@ -9,10 +9,10 @@ import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter, type ExtensionAPI, type
 import type { Details, SingleResult } from "pi-subagents/shared-types";
 import { parseConfig, type RouterConfig } from "./config.ts";
 import { captureChildCost } from "./cost-dashboard.ts";
-import { type DecisionRecord, packageVersion, taskSummary } from "./decisions.ts";
+import { decisionLabel, type DecisionRecord, decisionStatusText, routerVersion, taskSummary } from "./decisions.ts";
 import { decisionEntryType, reportedRunUsage, type RunReceipt, runEntryType, runSessionKey } from "./history.ts";
 import { checkChatModel, determineRoute, type RoutingDecision } from "./router.ts";
-import { setRouterStatus } from "./router-status.ts";
+import { setRouterLastDecision, setRouterStatus } from "./router-status.ts";
 
 // Every top-level `subagent` parameter in the pi-subagents tool schema belongs to exactly one of these sets;
 // test/subagent-schema.contract.test.ts fails when the installed schema adds an unclassified key.
@@ -154,7 +154,6 @@ type DecisionTrace = {
   requestId?: string;
 };
 
-const routerVersion = packageVersion(new URL("../package.json", import.meta.url));
 const skip = (reason: RoutingSkipReason, detail?: string): HookResult => ({ outcome: "skipped", reason, detail });
 const errorDiagnostic = (diagnostics: readonly { severity: string }[]) => diagnostics.some(({ severity }) => severity === "error");
 
@@ -288,7 +287,7 @@ export function registerNativeRouting(pi: ExtensionAPI, configFile: URL, session
   function recordDecision(event: ToolCallEvent, result: HookResult, trace: DecisionTrace, startedAt: number) {
     const { agent, task, label } = event.input as Record<string, unknown>;
     const routing = trace.routing;
-    pi.appendEntry<DecisionRecord>(decisionEntryType, {
+    const record: DecisionRecord = {
       toolCallId: event.toolCallId,
       at: new Date().toISOString(),
       sessionKey: trace.sessionKey,
@@ -306,7 +305,9 @@ export function registerNativeRouting(pi: ExtensionAPI, configFile: URL, session
       requestId: trace.requestId,
       durationMs: Math.round(performance.now() - startedAt),
       versions: { router: routerVersion, piSubagents: trace.piSubagents },
-    });
+    };
+    pi.appendEntry<DecisionRecord>(decisionEntryType, record);
+    return record;
   }
 
   pi.on("tool_call", async (event, ctx) => {
@@ -323,7 +324,9 @@ export function registerNativeRouting(pi: ExtensionAPI, configFile: URL, session
     }
     if (result.outcome === "skipped" && result.reason === "child_runtime") return;
     try {
-      recordDecision(event, result, trace, startedAt);
+      const record = recordDecision(event, result, trace, startedAt);
+      setRouterLastDecision(ctx.ui, decisionStatusText(record));
+      if (trace.debug) ctx.ui.notify(`Router decision: ${[decisionLabel(record), record.agent].filter(Boolean).join(" · ")}`, "info");
     } catch {
       // The decision log is diagnostic; a failed write must not block the subagent call.
     }

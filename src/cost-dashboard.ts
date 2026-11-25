@@ -3,6 +3,7 @@ import { basename, dirname, join } from "node:path";
 import { SessionManager, type ExtensionCommandContext, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { pickConfigItem } from "./config-picker.ts";
 import { reconcileChildCost, summarizeCosts, type CostSession } from "./cost-accounting.ts";
+import { money, tokens } from "./format.ts";
 import { type RunUsage, runEntryType, runSessionKey } from "./history.ts";
 
 const scanLimit = 50;
@@ -42,9 +43,6 @@ export async function captureChildCost(ctx: ExtensionContext, sessionFile: strin
   }
 }
 
-const money = (value: number | undefined) => value === undefined ? "unknown" : `${value < 0 ? "−" : ""}$${Math.abs(value).toPrecision(5)}`;
-const tokens = ({ input, output, cacheRead, cacheWrite }: RunUsage) =>
-  `${input} input / ${output} output / ${cacheRead} cache read / ${cacheWrite} cache write`;
 const back = { value: "Back", label: "Back" };
 
 export async function showCostDashboard(ctx: ExtensionCommandContext, signal: AbortSignal) {

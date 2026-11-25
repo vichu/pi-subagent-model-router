@@ -94,7 +94,7 @@ Abstention is not an error and does not block the native call. The router never 
 
 ## Router workspace
 
-Run `/subagent-router` in Pi. The home screen and its controls open inline in the editor area at the bottom, not over the conversation. Choose **Run a brief**, **Rubric and settings**, **Session history**, **Router status**, or **Cost dashboard**. Press Esc to back out.
+Run `/subagent-router` in Pi. The home screen and its controls open inline in the editor area at the bottom, not over the conversation. Choose **Run a brief**, **Rubric and settings**, **Session history**, **Routing decisions**, **Router status**, or **Cost dashboard**. Press Esc to back out.
 
 In **Rubric and settings**, use ↑/↓ to preview a route’s criteria, model, and thinking level, and Enter to edit. In the model dropdown, type to filter Pi’s available chat models by name, provider, or ID. The thinking dropdown shows the levels supported by the selected model.
 
@@ -106,7 +106,7 @@ From the home screen, select **Router status** → **Enabled** or **Disabled**, 
 | --- | --- |
 | `version` | Required; `1`. |
 | `enabled` | Optional boolean; defaults to `true`. Set to `false` to stop new native model overrides and manual briefs. Native delegation and already-running children are unaffected. |
-| `debug` | Optional boolean; defaults to `false`. When `true`, routing decision entries also store the full task text. |
+| `debug` | Optional boolean; defaults to `false`. When `true`, routing decision entries also store the full task text and Pi shows a notification for each decision. Toggle it with **Rubric and settings** → **Debug decisions**; saving writes `debug` only while it is on. See [Routing decisions](#routing-decisions). |
 | `routes` | 1–32 rows. Each has a unique lowercase `name` (letters, digits, underscores; start with a letter), a human-readable `label`, `when_to_use` criteria, a provider-qualified `model`, and `thinking`. |
 | `classifiers` | Optional ordered list of up to four provider-qualified classifier IDs from Pi's catalog; defaults to `typesafe/jev-latest`, then `openai/gpt-6-luna`. `[]` disables native classifiers. |
 | `routing_model` | Optional chat `{ "model": "provider/id", "thinking": "low" }` tried if no classifier can return a valid answer. |
@@ -154,11 +154,55 @@ Open `/subagent-router` → **Session history** to see routed native foreground 
 
 A routed native run is recorded only after its foreground tool result arrives. The router then saves the submitted and terminal receipts together, with the run ID, outcome, effective model and thinking, and reported usage from the `subagent` tool result. Outcomes use the same status names as the structured delegation bridge. Background (`async`) launches, runs detached or paused mid-run, and calls that never run report no final usage in their tool result. The router records nothing for them rather than leaving a receipt that stays unresolved. Background completions arrive only as an in-process `pi-subagents` event that is not replayed after a reload. If Pi exits, the session changes, or the router is reloaded before a routed foreground run finishes, that run is not recorded. Receipts are stored in the Pi session and survive reload/resume for saved sessions. They do not include the brief or worker output and are not sent to the model.
 
-The native routing hook also saves a routing decision entry (`pi-subagent-model-router:decision:v1`) for every top-level `subagent` call it evaluates, including background launches and calls it leaves unchanged. Each entry records the outcome (`routed`, `fallback`, `skipped` or `error`), a reason code and detail when skipped, each classifier or routing-model attempt with its result, fit, route and time, the requested model and thinking, and the router and `pi-subagents` versions. Entries hold the first 120 characters of the brief, whitespace-collapsed, and its SHA-256 hash, and the full brief only when `debug` is `true`. Error details name a fixed kind, never provider responses. Decision entries are not sent to the model and do not count toward cost accounting. Nested calls and calls inside child runtimes are not recorded.
+The native routing hook also saves a routing decision entry for every top-level `subagent` call it evaluates, including background launches and calls it leaves unchanged. See [Routing decisions](#routing-decisions).
 
 History includes earlier runs with saved router receipts, but it cannot reconstruct missing receipts. It also counts router requests with attributable usage observations across all branches of the current Pi session. Each active-branch row can show the terminal response's reported input, output, cache-read and cache-write tokens and USD cost. These are observations, not verified totals or invoice amounts. `?` and `unknown` include zero-valued fields because the dependency can substitute zeros for missing data. Unidentified sessions, records inherited from a fork, older receipts without a session identity, missing or malformed reports, and ambiguous duplicate identities do not contribute observations. A count of zero means no eligible observations, not zero spend.
 
 **All-subagent totals and savings are not available from `pi-subagents`.** The structured delegation response covers only requests sent through that bridge. Its optional aggregate can lose missing-field information and does not include per-attempt model/pricing or prove all usage was captured. Pi exposes the session tree and stored messages, but not a complete inventory of child launches and their priced usage. The native `/subagent-cost` command (also available via the subagent RPC `cost` method) is a best-effort branch report: it reads tool results, completion records and optional artifacts, can fill missing fields with zeros, and does not report per-model rates or prove coverage of every launch. Use it, the native tool result, or a completion card to inspect native runs that have no router receipt: unrouted calls and routed background or detached runs.
+
+## Routing decisions
+
+Open `/subagent-router` → **Routing decisions** to see why each native `subagent` call was or wasn't routed. The list covers the active session branch, newest first, one row per call:
+
+- `✓ code_review → openai-codex/gpt-6-luna:high`: a route matched and the router set the child's model.
+- `↺ fallback → <model>`: the call was eligible, but no route matched, so `base_agent` was used.
+- `↷ skipped · <reason>`: the router left the call unchanged; see the reason codes below.
+- `✗ error`: an unexpected error; the router left the call unchanged.
+
+Each row shows the persona, the call's label or task preview, and the local time. The line under the title counts decisions by outcome, for example `12 decisions · 9 routed · 1 fallback · 2 skipped · active session branch`. The preview explains the reason and a fix, and shows the task preview, each classifier or routing-model attempt (backend · kind · result · fit · route · ms · error), the final or candidate model and thinking, the router and `pi-subagents` versions, the tool call and request IDs, and linked receipts with their status, run ID, effective model, tokens and cost. Press Enter for a detail list of the task, each attempt and each receipt; press Esc to return. Without the TUI, the view prints the same report as text.
+
+After each recorded decision, the footer shows the latest one, for example `Router: enabled · last: code_review → gpt-6-luna` or `Router: enabled · last: skipped (unrecognized_params)`. `Router: disabled`, `Router: config unavailable` and `Router: pi-subagents incompatible` take precedence.
+
+### Reason codes
+
+| Code | Meaning | Fix |
+| --- | --- | --- |
+| `native_placement_config` | The `pi-subagents` extension config sets a default `worktree`, so placement stays native. | Remove `worktree` from that `config.json`. |
+| `invalid_params` | `agent`, `task`, `async` or `label` was missing or had the wrong type. | None; `pi-subagents` validates and reports the call. |
+| `explicit_model` | The call set `model` (detail lists all explicit options). | Omit `model` and other launch options to let the router choose. |
+| `deliberate_params` | The call set workflow, placement, output, management or option parameters. | None; only plain `agent`, `task`, `async` and `label` calls are routed. |
+| `aborted` | The call or session was cancelled before routing finished. | None. |
+| `config_unavailable` | `router.json` could not be read or is invalid. | Fix `router.json` or reopen **Rubric and settings**. |
+| `routing_disabled` | `enabled` is `false`. | Enable it under **Router status**. |
+| `unrecognized_params` | `pi-subagents` sent parameters the router doesn't know (named in the detail). | Update pi-subagent-model-router. |
+| `pi_subagents_incompatible` | The loaded `pi-subagents` lacks the preflight and capability-ceiling APIs. | Update the router, or report the version shown in diagnostics. |
+| `settings_conflict` | `subagents` settings in the named file may change model selection. | Remove its model scope, default, limit, override or machine keys, or accept native selection. |
+| `scoped_models` | Pi has scoped models (for example `--models`). | Start Pi without scoped models. |
+| `capability_ceiling` | A `pi-subagents` capability ceiling applies to the session. | None; routing resumes when no ceiling applies. |
+| `baseline_contract` | Preflight of the unchanged call failed or found a model pin, thinking ceiling, shadowed agent or error diagnostic. | Check the agent definition. |
+| `agent_pins_model` | The agent definition declares a non-Pi `runner`, `model`, `machine`, `launcher` or `fast`. | Remove that frontmatter key to allow routing. |
+| `worker_model_unusable` | The selected model is missing, unauthenticated, virtual, provided by a parent extension, or lacks the thinking level. | Choose a usable model in **Rubric and settings**. |
+| `candidate_contract_mismatch` | Preflight with the routed model differed from the unchanged call. | Check subagent settings and the agent definition; report it if it persists. |
+
+An `error` decision names the step that failed (for example `settings` or `routing`), never provider output.
+
+### Debug mode and privacy
+
+Decision entries are stored in the Pi session file with `pi.appendEntry()`. Per Pi's extension docs, custom entries do not participate in LLM context, so they are not sent to the model, and they do not count toward cost accounting. By default an entry keeps only the first 120 characters of the brief, whitespace-collapsed, and its SHA-256 hash. Turn on **Rubric and settings** → **Debug decisions** (`"debug": true`) to also store the full brief and show a one-line notification for each decision made after `router.json` is read. Turn it off when you are done; existing entries keep their full text.
+
+### Diagnostics bundle
+
+Select **Copy diagnostics** in **Routing decisions** to open a redacted JSON bundle in Pi's editor; select and copy it, then press Esc. It contains the generation time; the router, detected `pi-subagents` (from the latest decision) and Pi versions; a config summary (`enabled`, `debug`, route names with models and thinking, classifiers, `base_agent`, `routing_model` and the SHA-256 of `router.json`, without `when_to_use` text); and the last 50 decisions on the branch with task previews and hashes. Full task text is removed even when debug mode stored it. The bundle never includes credentials or environment variables, and your home directory appears as `~`. Review the task previews before sharing.
 
 ## Cost dashboard
 

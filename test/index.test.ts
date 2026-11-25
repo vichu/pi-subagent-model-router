@@ -125,9 +125,9 @@ test("opens Router status directly from home and backs out without running a bri
   select.mockResolvedValueOnce("Router status");
   await open();
   expect(select.mock.calls).toEqual([
-    ["Subagent router · home", ["Run a brief", "Rubric and settings", "Session history", "Router status", "Cost dashboard"]],
+    ["Subagent router · home", ["Run a brief", "Rubric and settings", "Session history", "Routing decisions", "Router status", "Cost dashboard"]],
     ["Router status", ["Enabled", "Disabled"]],
-    ["Subagent router · home", ["Run a brief", "Rubric and settings", "Session history", "Router status", "Cost dashboard"]],
+    ["Subagent router · home", ["Run a brief", "Rubric and settings", "Session history", "Routing decisions", "Router status", "Cost dashboard"]],
   ]);
   expect(classify).not.toHaveBeenCalled();
 });
@@ -144,6 +144,19 @@ test("opens the Cost dashboard from home without running a brief", async () => {
   } finally {
     discover.mockRestore();
   }
+});
+
+test("opens Routing decisions from home and returns there", async () => {
+  const { open, select, classify } = setup();
+  select.mockResolvedValueOnce("Routing decisions");
+  await open();
+  expect(select.mock.calls.map(([title, options]) => [title.split("\n")[0], options])).toEqual([
+    ["Subagent router · home", expect.arrayContaining(["Routing decisions"])],
+    ["Subagent router · Routing decisions", ["Copy diagnostics", "Back"]],
+    ["Subagent router · home", expect.arrayContaining(["Routing decisions"])],
+  ]);
+  expect(select.mock.calls[1][0]).toContain("No routing decisions recorded on this session branch yet.");
+  expect(classify).not.toHaveBeenCalled();
 });
 
 test("cancels brief entry back to home without reading configuration", async () => {

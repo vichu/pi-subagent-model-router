@@ -42,6 +42,26 @@ export function packageVersion(manifest: URL): string | undefined {
   }
 }
 
+export const routerVersion = packageVersion(new URL("../package.json", import.meta.url));
+
+/** List-row and debug-notification summary, for example `✓ code_review → openai-codex/gpt-6-luna:high`. */
+export function decisionLabel({ outcome, route, reason, model, thinking }: DecisionRecord) {
+  const target = `${model ?? "unknown model"}${thinking ? `:${thinking}` : ""}`;
+  if (outcome === "routed") return `✓ ${route ?? "unknown route"} → ${target}`;
+  if (outcome === "fallback") return `↺ fallback → ${target}`;
+  if (outcome === "skipped") return `↷ skipped · ${reason ?? "unknown reason"}`;
+  return "✗ error";
+}
+
+/** Status-line summary of a decision written by the native routing hook, for example `code_review → gpt-6-luna`. */
+export function decisionStatusText({ outcome, route, reason, detail, model }: DecisionRecord) {
+  const modelId = String(model).replace(/^[^/]*\//, "");
+  if (outcome === "routed") return `${route} → ${modelId}`;
+  if (outcome === "fallback") return `fallback → ${modelId}`;
+  if (outcome === "skipped") return `skipped (${reason})`;
+  return `error (${detail})`;
+}
+
 export function taskSummary(task: string, debug: boolean): NonNullable<DecisionRecord["task"]> {
   const preview = Array.from(task.replace(/\s+/g, " ").trim()).slice(0, previewLength).join("");
   const sha256 = createHash("sha256").update(task, "utf8").digest("hex");

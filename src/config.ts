@@ -8,7 +8,7 @@ export type ModelChoice = { model: string; thinking: Thinking };
 export type Route = ModelChoice & { name: string; label: string; when_to_use: string };
 export type RouterConfig = {
   enabled: boolean;
-  /** Stores full task text in routing decision entries. */
+  /** Stores full task text in routing decision entries and notifies each decision. parseConfig keeps it only when true, so saving omits it otherwise. */
   debug?: boolean;
   base_agent?: ModelChoice;
   routing_model?: ModelChoice;
@@ -67,7 +67,7 @@ export function parseConfig(json: string): RouterConfig {
   if (!Array.isArray(classifiers) || classifiers.length > 4) throw new Error("config.classifiers must be an array of up to 4 classifier IDs");
   return {
     enabled: config.enabled ?? true,
-    debug: config.debug ?? false,
+    ...(config.debug ? { debug: true as const } : {}),
     routes,
     classifiers: classifiers.map((id, i) => modelId(id, `classifiers[${i}]`)),
     base_agent: config.base_agent === undefined ? undefined : choice(config.base_agent, "base_agent"),

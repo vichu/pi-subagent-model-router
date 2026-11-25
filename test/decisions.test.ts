@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { expect, test } from "vitest";
-import { type DecisionRecord, linkReceipts, packageVersion, readDecisions, taskSummary } from "../src/decisions.ts";
+import { decisionLabel, type DecisionRecord, decisionStatusText, linkReceipts, packageVersion, readDecisions, routerVersion, taskSummary } from "../src/decisions.ts";
 import { decisionEntryType, type RunReceipt, runEntryType } from "../src/history.ts";
 
 const decision: DecisionRecord = {
@@ -76,4 +76,25 @@ test("packageVersion reads a string version and tolerates a missing or malformed
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test.each<[string, Partial<DecisionRecord>, string, string]>([
+  ["routed", {}, "✓ writer → p/writer:high", "writer → writer"],
+  ["fallback", { outcome: "fallback", route: null, model: "provider/nested/base", thinking: "low" }, "↺ fallback → provider/nested/base:low", "fallback → nested/base"],
+  ["skipped", { outcome: "skipped", reason: "unrecognized_params", detail: "priority" }, "↷ skipped · unrecognized_params", "skipped (unrecognized_params)"],
+  ["error", { outcome: "error", detail: "settings" }, "✗ error", "error (settings)"],
+])("summarizes a %s decision for the list row and status line", (_, patch, label, status) => {
+  const record = { ...decision, ...patch };
+  expect(decisionLabel(record)).toBe(label);
+  expect(decisionStatusText(record)).toBe(status);
+});
+
+test("decisionLabel tolerates incomplete records read from a session", () => {
+  const sparse = { ...decision, route: undefined, model: undefined, thinking: undefined };
+  expect(decisionLabel(sparse)).toBe("✓ unknown route → unknown model");
+  expect(decisionLabel({ ...sparse, outcome: "skipped" })).toBe("↷ skipped · unknown reason");
+});
+
+test("routerVersion is the package manifest version", () => {
+  expect(routerVersion).toBe(packageVersion(new URL("../package.json", import.meta.url)));
 });

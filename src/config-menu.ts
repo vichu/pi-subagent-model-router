@@ -114,6 +114,14 @@ async function applyAction(ctx: ExtensionCommandContext, config: RouterConfig, r
       config.enabled = next === "Enabled";
       return true;
     }
+    case "Debug decisions": {
+      const current = config.debug ? "On" : "Off";
+      const choices = ["On", "Off"].map((value) => ({ value, label: value }));
+      const next = await pickConfigItem(ctx, "Debug decisions", choices, { current, hint: `Currently ${current.toLowerCase()} · applies to new subagent calls` });
+      if (next !== "On" && next !== "Off") return false;
+      config.debug = next === "On";
+      return true;
+    }
     case "Add route": {
       const route = await addRoute(ctx);
       if (!route) return false;
@@ -163,7 +171,12 @@ export async function showConfigMenu(ctx: ExtensionCommandContext, path: URL, si
     const status = config.enabled ? "Enabled" : "Disabled";
     const switchItem = { value: "Router status", label: `Router status: ${status}`, preview: "Enable or disable routing without changing the rubric." };
     const actions = ["Add route", "Classifier order", "Base model", "Routing model"].map((value) => ({ value, label: value }));
-    const action = screen === "status" ? switchItem.value : await pickConfigItem(ctx, "Subagent router · rubric", [switchItem, ...rows, ...actions], { hint: `${status} · ${rows.length} routes · router.json` });
+    const debugItem = {
+      value: "Debug decisions", label: `Debug decisions: ${config.debug ? "On" : "Off"}`,
+      preview: "When on, routing decision entries store the full task text and Pi shows a notification for each decision. " +
+        "When off, entries keep only a 120-character preview and a SHA-256 hash of the task.",
+    };
+    const action = screen === "status" ? switchItem.value : await pickConfigItem(ctx, "Subagent router · rubric", [switchItem, ...rows, ...actions, debugItem], { hint: `${status} · ${rows.length} routes · router.json` });
     if (action === undefined || !await applyAction(ctx, config, rows, action)) return;
     const draft = { version: 1, ...config };
     const normalized = parseConfig(JSON.stringify(draft));
