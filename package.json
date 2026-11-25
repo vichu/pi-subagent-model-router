@@ -13,7 +13,8 @@
   "files": [
     "src",
     "router.json",
-    "agents/router-spike-worker.md"
+    "agents/router-spike-worker.md",
+    "CHANGELOG.md"
   ],
   "pi": {
     "extensions": [

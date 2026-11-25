@@ -228,6 +228,10 @@ npm test
 
 Unit tests mock the model registry and delegation events. The offline integration test runs Pi 1.5.2 and the locked pi-subagents version with a loopback model endpoint and verifies the child model and thinking received by it, without live credentials. The coverage gate requires 100% of statements, branches, functions, and lines for each runtime source file.
 
+### Releases and changelog
+
+Record user-facing changes in [`CHANGELOG.md`](CHANGELOG.md) under `## [Unreleased]` in the same PR. The release PR renames that heading to `## [MAJOR.MINOR.PATCH] - YYYY-MM-DD` and adds a new empty `## [Unreleased]` above it. When the release tag is pushed, the release workflow checks that the version has a changelog section with at least one bullet, and after publishing to npm it creates a GitHub Release with that section as the notes.
+
 ## Releasing to npm
 
 ### One-time setup
@@ -246,7 +250,7 @@ Configure this when the first automated release is ready: npm requires a first s
 
 ### Release steps
 
-1. Open a version PR with a new stable `MAJOR.MINOR.PATCH` in both `package.json` and `package-lock.json`. On the PR branch, `npm version <version> --no-git-tag-version` can update both without creating a commit or tag. Review any versioned install examples. Merge the PR into `main`; merging alone does not publish or bump a version.
+1. Open a version PR with a new stable `MAJOR.MINOR.PATCH` in both `package.json` and `package-lock.json`. On the PR branch, `npm version <version> --no-git-tag-version` can update both without creating a commit or tag. Rename `## [Unreleased]` in `CHANGELOG.md` to the new version and date, and review any versioned install examples. Merge the PR into `main`; merging alone does not publish or bump a version.
 2. Fetch `main` and deliberately tag the **merged commit on `main`** (not the PR branch tip). Replace the placeholders, and stop if the ancestry check fails:
 
    ```sh
@@ -258,5 +262,5 @@ Configure this when the first automated release is ready: npm requires a first s
      git push origin "refs/tags/v$version"
    ```
 
-3. Watch **Publish npm release** in GitHub Actions. The tag must be annotated, match the version in the committed manifest and lockfile exactly, and point to a commit reachable from `origin/main`. The validation job runs `npm ci`, typechecking, tests, and an `npm pack` dry-run without OIDC. A separate GitHub-hosted job publishes from a fresh checkout of that same commit with OIDC. Packing and publishing disable lifecycle scripts; this package ships source and does not need a build hook. The workflow pins Node 24.22.3 (bundled npm 11.19.1 for publishing). Only `npm ci` uses npm 11.6.2 for compatibility with the current lockfile. npm trusted publishing requires Node 22.14.0+ and npm 11.5.1+ and does not support self-hosted runners.
-4. Verify with `npm view "pi-subagent-model-router@$version" version dist.integrity` and check the package page for provenance. You can create a GitHub Release from the tag for release notes, but it is optional and does not trigger publishing.
+3. Watch **Publish npm release** in GitHub Actions. The tag must be annotated, match the version in the committed manifest and lockfile exactly, and point to a commit reachable from `origin/main`, and `CHANGELOG.md` must have a section for the version with at least one bullet. The validation job runs `npm ci`, typechecking, tests, and an `npm pack` dry-run without OIDC. A separate GitHub-hosted job publishes from a fresh checkout of that same commit with OIDC. Packing and publishing disable lifecycle scripts; this package ships source and does not need a build hook. The workflow pins Node 24.22.3 (bundled npm 11.19.1 for publishing). Only `npm ci` uses npm 11.6.2 for compatibility with the current lockfile. npm trusted publishing requires Node 22.14.0+ and npm 11.5.1+ and does not support self-hosted runners. After publishing, a final job creates (or, on a re-run, updates) the GitHub Release for the tag with the version's `CHANGELOG.md` section as its notes.
+4. Verify with `npm view "pi-subagent-model-router@$version" version dist.integrity` and check the package page for provenance. Check that the GitHub Release for the tag shows the changelog notes.

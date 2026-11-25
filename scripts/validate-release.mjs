@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { changelogError } from './changelog.mjs';
 
 const mainRef = 'refs/remotes/origin/main';
 
@@ -42,6 +43,15 @@ try {
       throw new Error(`${field} must match tag version ${version}; found ${JSON.stringify(actual)}.`);
     }
   }
+
+  let changelog;
+  try {
+    changelog = git('show', `${taggedCommit}:CHANGELOG.md`);
+  } catch {
+    throw new Error('CHANGELOG.md must exist in the tagged commit.');
+  }
+  const changelogProblem = changelogError(changelog, version);
+  if (changelogProblem) throw new Error(changelogProblem);
 
   console.log(`Validated v${version} at ${taggedCommit}.`);
 } catch (error) {
