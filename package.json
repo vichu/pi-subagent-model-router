@@ -44,6 +44,6 @@
     "vitest": "4.1.9"
   },
   "dependencies": {
-    "pi-subagents": "0.89.1"
+    "pi-subagents": ">=0.89.1"
   }
 }

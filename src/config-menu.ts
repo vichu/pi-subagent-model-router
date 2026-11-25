@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { pickConfigItem } from "./config-picker.ts";
-import { type ModelChoice, parseConfig, type Route, routerCommand, splitModel } from "./config.ts";
+import { type ModelChoice, parseConfig, type Route, type RouterConfig, routerCommand, splitModel } from "./config.ts";
 import { setRouterStatus } from "./router-status.ts";
 
 async function pickThinking(ctx: ExtensionCommandContext, modelId: string, current: ModelChoice["thinking"]) {
@@ -103,6 +103,49 @@ async function saveConfig(path: URL, original: string, contents: string, signal:
   }
 }
 
+// Edits config in place; returns false when the user cancels.
+async function applyAction(ctx: ExtensionCommandContext, config: RouterConfig, rows: { value: string }[], action: string): Promise<boolean> {
+  switch (action) {
+    case "Router status": {
+      const status = config.enabled ? "Enabled" : "Disabled";
+      const choices = ["Enabled", "Disabled"].map((value) => ({ value, label: value }));
+      const next = await pickConfigItem(ctx, "Router status", choices, { current: status, hint: `Currently ${status.toLowerCase()} · applies to new router runs` });
+      if (next !== "Enabled" && next !== "Disabled") return false;
+      config.enabled = next === "Enabled";
+      return true;
+    }
+    case "Add route": {
+      const route = await addRoute(ctx);
+      if (!route) return false;
+      config.routes.push(route);
+      return true;
+    }
+    case "Classifier order": {
+      const ids = await ctx.ui.editor("Classifier IDs, one per line in priority order (empty disables classifiers)", config.classifiers.join("\n"));
+      if (ids === undefined) return false;
+      config.classifiers = ids.split("\n").map((id) => id.trim()).filter(Boolean);
+      return true;
+    }
+    case "Base model":
+    case "Routing model": {
+      const key = action === "Base model" ? "base_agent" : "routing_model";
+      const choice = await editOptionalModel(ctx, action, config[key]);
+      if (choice === undefined) return false;
+      config[key] = choice ?? undefined;
+      return true;
+    }
+    default: {
+      const index = rows.findIndex(({ value }) => value === action);
+      if (index < 0) return false;
+      const updated = await editRoute(ctx, config.routes[index]);
+      if (!updated) return false;
+      if (updated === "remove") config.routes.splice(index, 1);
+      else config.routes[index] = updated;
+      return true;
+    }
+  }
+}
+
 export async function showConfigMenu(ctx: ExtensionCommandContext, path: URL, signal: AbortSignal, screen: "rubric" | "status" = "rubric") {
   const { ui } = ctx;
   if (!ctx.hasUI) {
@@ -121,33 +164,7 @@ export async function showConfigMenu(ctx: ExtensionCommandContext, path: URL, si
     const switchItem = { value: "Router status", label: `Router status: ${status}`, preview: "Enable or disable routing without changing the rubric." };
     const actions = ["Add route", "Classifier order", "Base model", "Routing model"].map((value) => ({ value, label: value }));
     const action = screen === "status" ? switchItem.value : await pickConfigItem(ctx, "Subagent router · rubric", [switchItem, ...rows, ...actions], { hint: `${status} · ${rows.length} routes · router.json` });
-    if (action === undefined) return;
-    if (action === "Router status") {
-      const choices = ["Enabled", "Disabled"].map((value) => ({ value, label: value }));
-      const next = await pickConfigItem(ctx, "Router status", choices, { current: status, hint: `Currently ${status.toLowerCase()} · applies to new router runs` });
-      if (next !== "Enabled" && next !== "Disabled") return;
-      config.enabled = next === "Enabled";
-    } else if (action === "Add route") {
-      const route = await addRoute(ctx);
-      if (!route) return;
-      config.routes.push(route);
-    } else if (action === "Classifier order") {
-      const ids = await ui.editor("Classifier IDs, one per line in priority order (empty disables classifiers)", config.classifiers.join("\n"));
-      if (ids === undefined) return;
-      config.classifiers = ids.split("\n").map((id) => id.trim()).filter(Boolean);
-    } else if (action === "Base model" || action === "Routing model") {
-      const key = action === "Base model" ? "base_agent" : "routing_model";
-      const choice = await editOptionalModel(ctx, action, config[key]);
-      if (choice === undefined) return;
-      config[key] = choice ?? undefined;
-    } else {
-      const index = rows.findIndex(({ value }) => value === action);
-      if (index < 0) return;
-      const updated = await editRoute(ctx, config.routes[index]);
-      if (!updated) return;
-      if (updated === "remove") config.routes.splice(index, 1);
-      else config.routes[index] = updated;
-    }
+    if (action === undefined || !await applyAction(ctx, config, rows, action)) return;
     const draft = { version: 1, ...config };
     const normalized = parseConfig(JSON.stringify(draft));
     if (!await ui.confirm("Save router.json?", "The next router run will use these settings.")) return;

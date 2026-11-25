@@ -2,16 +2,27 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionEntry, ToolCallEvent, ToolExecutionEndEvent } from "@earendil-works/pi-coding-agent";
 import type { resolveCurrentSubagentCapabilityCeiling } from "pi-subagents/capability-ceiling";
 import type { resolveSubagentLaunchContract } from "pi-subagents/preflight";
 import { afterEach, expect, test, vi } from "vitest";
+import { summarizeCosts } from "../src/cost-accounting.ts";
+import { runEntryType } from "../src/history.ts";
 import { registerNativeRouting } from "../src/native-routing.ts";
 
 const preview = vi.fn<typeof resolveSubagentLaunchContract>();
 const ceiling = vi.fn<typeof resolveCurrentSubagentCapabilityCeiling>();
 const nativeCall = { agent: "custom-persona", task: "Describe the sample" };
 const base = { model: "demo/routed", thinking: "low" };
+const header = { id: "parent", timestamp: "2026-01-01T00:00:00Z" };
+const sessionKey = JSON.stringify([header.id, header.timestamp]);
+const runId = "12345678-abcd-4567-abcd-123456789012";
+const counters = { input: 10, output: 20, cacheRead: 0, cacheWrite: 0 };
+const childUsage = { ...counters, cost: 0.5, turns: 1 };
+const foreground = (child: Record<string, unknown> = {}, details: Record<string, unknown> = {}) => ({ content: [], details: {
+  mode: "single", runId, ...details,
+  results: [{ index: 0, agent: "custom-persona", task: "[prompt redacted]", exitCode: 0, usage: childUsage, model: "demo/routed", thinking: "low", ...child }],
+} });
 const directories: string[] = [];
 
 afterEach(async () => {
@@ -70,17 +81,23 @@ async function setup() {
     getProvider: vi.fn(), hasConfiguredAuth: vi.fn().mockReturnValue(true), getRegisteredProviderIds: vi.fn().mockReturnValue([]) };
   const getAllTools = vi.fn().mockReturnValue([{ name: "subagent", sourceInfo: { path: entry } }]);
   const on = vi.fn();
+  const entries: SessionEntry[] = [];
+  const appendEntry = vi.fn((customType: string, data: unknown) => { entries.push({ type: "custom", id: String(entries.length), customType, data } as SessionEntry); });
+  const getHeader = vi.fn<() => { id: string; timestamp: string } | null>().mockReturnValue(header);
   const ctx = { cwd, isProjectTrusted: vi.fn().mockReturnValue(true), scopedModels: [] as unknown[],
-    model, modelRegistry: registry, ui: { setStatus: vi.fn() }, sessionManager: { getSessionId: () => "parent", getSessionFile: () => undefined, getLeafId: () => null } };
-  const register = () => registerNativeRouting({ on, getAllTools } as unknown as ExtensionAPI, pathToFileURL(configFile), controller.signal);
+    model, modelRegistry: registry, ui: { setStatus: vi.fn(), notify: vi.fn() }, sessionManager: { getSessionId: () => "parent", getSessionFile: () => undefined, getLeafId: () => null, getHeader } };
+  const register = () => registerNativeRouting({ on, getAllTools, appendEntry } as unknown as ExtensionAPI, pathToFileURL(configFile), controller.signal);
   register();
+  const hook = <T>(name: string) => on.mock.calls.findLast(([event]) => event === name)![1] as (event: T, ctx: ExtensionContext) => Promise<unknown>;
   const call = async (value: Record<string, unknown> = nativeCall, patch: Record<string, unknown> = {}, signal?: AbortSignal) => {
     const input = { ...value };
-    const handler = on.mock.lastCall![1] as (event: ToolCallEvent, ctx: ExtensionContext) => Promise<unknown>;
-    expect(await handler({ type: "tool_call", toolName: "subagent", toolCallId: "child", input, ...patch }, { ...ctx, signal } as unknown as ExtensionContext)).toBeUndefined();
+    expect(await hook<ToolCallEvent>("tool_call")({ type: "tool_call", toolName: "subagent", toolCallId: "child", input, ...patch }, { ...ctx, signal } as unknown as ExtensionContext)).toBeUndefined();
     return input;
   };
-  return { dir, write, call, ctx, registry, model, getAllTools, controller, register, manifest, nativeManifest, preflightPath, ceilingPath, agentFile, configFile, config, response, userSettings, projectSettings, nativeConfig };
+  const end = async (result: unknown, isError = false, toolCallId = "child") => {
+    expect(await hook<ToolExecutionEndEvent>("tool_execution_end")({ type: "tool_execution_end", toolName: "subagent", toolCallId, result, isError }, ctx as unknown as ExtensionContext)).toBeUndefined();
+  };
+  return { dir, write, call, end, entries, appendEntry, getHeader, ctx, registry, model, getAllTools, controller, register, manifest, nativeManifest, preflightPath, ceilingPath, agentFile, configFile, config, response, userSettings, projectSettings, nativeConfig };
 }
 
 test("sets only the native model argument and doesn't impose an agent or run mode", async () => {
@@ -109,7 +126,14 @@ test.each([{ toolName: "read" }, { parentToolCallId: "codemode" }])("ignores unr
   expect(getAllTools).not.toHaveBeenCalled();
 });
 
-test("ignores SDK tools, wrappers, and other native versions", async () => {
+test("accepts other pi-subagents versions that expose the expected APIs", async () => {
+  const { call, write, manifest, nativeManifest, ctx } = await setup();
+  await write(manifest, { ...nativeManifest, version: "0.90.0" });
+  expect(await call()).toMatchObject({ model: "demo/routed:low" });
+  expect(ctx.ui.notify).not.toHaveBeenCalled();
+});
+
+test("ignores SDK tools, wrappers, and incompatible packages", async () => {
   const { call, getAllTools, write, manifest, nativeManifest } = await setup();
   getAllTools.mockReturnValueOnce([]);
   expect(await call()).toEqual(nativeCall);
@@ -120,7 +144,7 @@ test("ignores SDK tools, wrappers, and other native versions", async () => {
     getAllTools.mockReturnValueOnce([{ name: "subagent", sourceInfo: { path } }]);
     expect(await call()).toEqual(nativeCall);
   }
-  for (const patch of [{ name: "other" }, { version: "0.90.0" }, { type: "commonjs" }, { exports: undefined }]) {
+  for (const patch of [{ name: "other" }, { type: "commonjs" }, { exports: undefined }]) {
     await write(manifest, { ...nativeManifest, ...patch });
     expect(await call()).toEqual(nativeCall);
   }
@@ -149,6 +173,34 @@ test.each(["preflightPath", "ceilingPath"] as const)("abstains when the expected
   await fixture.write(fixture[key], "export {};");
   expect(await fixture.call()).toEqual(nativeCall);
   expect(preview).not.toHaveBeenCalled();
+});
+
+test("reports a pi-subagents package missing the expected exports once per session", async () => {
+  const { call, write, manifest, nativeManifest, ctx, register } = await setup();
+  await write(manifest, { ...nativeManifest, version: "0.91.0", exports: { "./preflight": nativeManifest.exports["./preflight"] } });
+  expect(await call()).toEqual(nativeCall);
+  expect(await call()).toEqual(nativeCall);
+  expect(preview).not.toHaveBeenCalled();
+  expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-subagent-model-router", "Router: pi-subagents incompatible");
+  expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
+  expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("pi-subagents (version 0.91.0)"), "warning");
+  register();
+  await write(manifest, { ...nativeManifest, version: undefined, type: "commonjs" });
+  expect(await call()).toEqual(nativeCall);
+  expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("pi-subagents (version unknown)"), "warning");
+  register();
+  await write(manifest, "not json");
+  expect(await call()).toEqual(nativeCall);
+  expect(ctx.ui.notify).toHaveBeenCalledTimes(3);
+});
+
+test("does not report incompatibility when routing is disabled", async () => {
+  const { call, write, manifest, config, configFile, ctx } = await setup();
+  await write(manifest, { name: "pi-subagents", version: "0.91.0" });
+  await write(configFile, { ...config, enabled: false });
+  expect(await call()).toEqual(nativeCall);
+  expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("pi-subagent-model-router", "Router: disabled");
+  expect(ctx.ui.notify).not.toHaveBeenCalled();
 });
 
 test("abstains in child runtimes, with runner overrides, and after cancellation", async () => {
@@ -277,4 +329,108 @@ test.each(["abort", "settings"])("rechecks %s before writing the model argument"
     return response({ model: "demo/routed:low" });
   });
   expect(await call(nativeCall, {}, abort.signal)).toEqual(nativeCall);
+});
+
+const childSession = (dir: string) => join(dir, "child", "session.jsonl");
+async function writeChildSession(write: (path: string, value: unknown) => Promise<void>, path: string) {
+  const message = { role: "assistant", provider: "demo", model: "routed", stopReason: "stop",
+    usage: { ...counters, totalTokens: 30, cost: { input: 0.1, output: 0.4, cacheRead: 0, cacheWrite: 0, total: 0.5, totalFromProvider: true } } };
+  await write(path, [{ type: "session", id: "child", timestamp: header.timestamp }, { type: "message", message }].map((line) => JSON.stringify(line)).join("\n"));
+}
+
+test("records one submitted and one terminal receipt for a routed foreground run", async () => {
+  const { call, end, entries, appendEntry, write, configFile, config, registry, dir } = await setup();
+  await write(configFile, { ...config, classifiers: ["demo/classifier"] });
+  Object.assign(registry, { getAvailableOfType: vi.fn().mockResolvedValue([{ id: "classifier" }]),
+    classify: vi.fn().mockResolvedValue({ stopReason: "stop", answers: { fits: { type: "bool", probability: 1 } } }) });
+  await writeChildSession(write, childSession(dir));
+  expect(await call()).toMatchObject({ model: "demo/routed:low" });
+  expect(appendEntry).not.toHaveBeenCalled();
+  await end(foreground({ sessionFile: childSession(dir) }));
+  expect(appendEntry.mock.calls.map(([type]) => type)).toEqual([runEntryType, runEntryType]);
+  const [submitted, terminal] = appendEntry.mock.calls.map(([, data]) => data);
+  expect(submitted).toEqual({ requestId: expect.stringMatching(/^[a-f0-9-]{36}$/), sessionKey, agent: "custom-persona",
+    route: "example", backend: "demo/classifier", requested: base, status: "submitted" });
+  const usage = { ...counters, cost: 0.5 };
+  expect(terminal).toEqual({ ...(submitted as object), runId, model: "demo/routed", thinking: "low", usage,
+    costAccounting: { version: 1, evidence: { models: [{ model: "demo/routed", usage }] } }, status: "completed" });
+  await end(foreground());
+  expect(appendEntry).toHaveBeenCalledTimes(2);
+  expect(summarizeCosts([{ key: sessionKey, timestamp: header.timestamp, entries }]).rows).toMatchObject([
+    { requests: 1, collected: 1, unresolved: 0, legacy: 0, rejected: 0, total: usage },
+  ]);
+});
+
+test("records no receipts when routing abstains", async () => {
+  const { call, end, appendEntry, write, configFile, config } = await setup();
+  expect(await call({ ...nativeCall, model: "demo/explicit:high" })).toEqual({ ...nativeCall, model: "demo/explicit:high" });
+  await end(foreground());
+  await write(configFile, { ...config, enabled: false });
+  expect(await call()).toEqual(nativeCall);
+  await end(foreground());
+  expect(appendEntry).not.toHaveBeenCalled();
+});
+
+test("pairs receipts by tool call id and records a base fallback route", async () => {
+  const { call, end, appendEntry } = await setup();
+  await call();
+  await end(foreground(), false, "other");
+  expect(appendEntry).not.toHaveBeenCalled();
+  await end(foreground({ agent: undefined, usage: { ...childUsage, cost: 0, input: 0, output: 0 } }));
+  const [submitted, terminal] = appendEntry.mock.calls.map(([, data]) => data);
+  expect(submitted).toMatchObject({ agent: "custom-persona", route: "base fallback", backend: null, status: "submitted" });
+  expect(terminal).toMatchObject({ requestId: (submitted as { requestId: string }).requestId, agent: "custom-persona", runId, status: "completed",
+    usage: undefined, costAccounting: undefined });
+});
+
+test.each([
+  ["background launch", { content: [], details: { mode: "single", results: [], asyncId: runId, asyncDir: "/runs" } }, false],
+  ["detached child", foreground({ detached: true }), false],
+  ["run paused after interrupt", foreground({ interrupted: true }), false],
+  ["blocked or aborted call", { content: [{ type: "text", text: "Tool execution was blocked" }], details: {} }, true],
+  ["missing result", undefined, true],
+  ["other mode", foreground({}, { mode: "chain" }), false],
+  ["missing run id", foreground({}, { runId: undefined }), false],
+  ["several children", { content: [], details: { mode: "single", runId, results: [{}, {}] } }, false],
+  ["malformed child", { content: [], details: { mode: "single", runId, results: [null] } }, false],
+] as const)("records nothing and drops the routed call for a %s", async (_, result, isError) => {
+  const { call, end, appendEntry } = await setup();
+  await call();
+  await end(result, isError);
+  await end(foreground());
+  expect(appendEntry).not.toHaveBeenCalled();
+});
+
+test.each([
+  [{ timedOut: true }, {}, false, "timed_out"],
+  [{}, { timedOut: true }, false, "timed_out"],
+  [{ structuredOutputFailed: true }, {}, false, "structured_output_failed"],
+  [{ toolBudgetBlocked: true }, {}, false, "tool_budget_exhausted"],
+  [{ acceptance: { status: "rejected", explicit: true } }, {}, false, "acceptance_failed"],
+  [{ acceptance: { status: "rejected", explicit: false } }, {}, false, "completed"],
+  [{ stopped: true }, {}, false, "interrupted"],
+  [{}, { stopped: true }, false, "interrupted"],
+  [{}, {}, true, "failed"],
+  [{ error: "boom" }, {}, false, "failed"],
+  [{ exitCode: 1 }, {}, false, "failed"],
+  [{ exitCode: undefined }, {}, false, "completed"],
+] as const)("maps foreground result %j %j (isError %s) to %s like structured delegation", async (child, details, isError, status) => {
+  const { call, end, appendEntry } = await setup();
+  await call();
+  await end(foreground(child, details), isError);
+  expect(appendEntry.mock.lastCall?.[1]).toMatchObject({ status, runId, usage: { ...counters, cost: 0.5 }, costAccounting: { version: 1, evidence: undefined } });
+});
+
+test("records nothing when the session changes, lacks an identity, or shuts down", async () => {
+  const { call, end, appendEntry, getHeader, controller } = await setup();
+  await call();
+  getHeader.mockReturnValueOnce({ id: "other", timestamp: header.timestamp });
+  await end(foreground());
+  getHeader.mockReturnValueOnce(null);
+  expect(await call()).toMatchObject({ model: "demo/routed:low" });
+  await end(foreground());
+  await call();
+  controller.abort();
+  await end(foreground());
+  expect(appendEntry).not.toHaveBeenCalled();
 });

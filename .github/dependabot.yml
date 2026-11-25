@@ -1,0 +1,17 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      pi-subagents:
+        patterns:
+          - pi-subagents
+      earendil-works:
+        patterns:
+          - "@earendil-works/*"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

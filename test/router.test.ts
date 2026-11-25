@@ -129,6 +129,27 @@ test("reports when no base model was chosen", async () => {
   await expect(determineRoute({ ...config, classifiers: [] }, "task", registry, undefined, abort.signal)).rejects.toThrow("No base model available");
 });
 
+test("classifier abstention without a base model throws immediately with accurate notes", async () => {
+  const { registry, abort, classify } = setup();
+  classify.mockResolvedValue(classifierResult(0.69));
+  const error = await determineRoute(config, "task", registry, undefined, abort.signal).catch((caught: Error) => caught);
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toContain("No base model available");
+  expect((error as Error).message).toContain("p/jev: no clear rubric match.");
+  expect((error as Error).message).not.toContain("failed or timed out");
+  expect(classify).toHaveBeenCalledTimes(1);
+});
+
+test("routing-model no_match without a base model throws without a false unavailable note", async () => {
+  const { registry, abort, result } = setup();
+  result.mockResolvedValue({ stopReason: "stop", content: [{ type: "text", text: "no_match" }] });
+  const error = await determineRoute({ ...config, classifiers: [], routing_model: base }, "task", registry, undefined, abort.signal).catch((caught: Error) => caught);
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toContain("No base model available");
+  expect((error as Error).message).toContain("p/base: no clear rubric match.");
+  expect((error as Error).message).not.toContain("routing model unavailable");
+});
+
 test.each(["before", "classifier", "chat"])("cancellation during %s is not treated as fallback", async (stage) => {
   const { run, abort, classify, result } = setup();
   if (stage === "before") abort.abort();

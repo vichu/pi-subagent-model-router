@@ -1,4 +1,4 @@
-import type { ModelCost } from "@earendil-works/pi-ai";
+import type { ModelCost, Usage } from "@earendil-works/pi-ai";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { RunReceipt, RunUsage } from "./history.ts";
 import { reportedRunUsage, runEntryType } from "./history.ts";
@@ -25,28 +25,38 @@ function flatRates(cost: ModelCost | undefined): Rates | undefined {
   return { input, output, cacheRead, cacheWrite };
 }
 
+type AssistantTurn = { provider: string; model: string; usage: Usage; tokens: RunUsage };
+
+// "abort" means the child's cost cannot be reconciled; "skip" means the entry carries no charge.
+function assistantTurn(entry: SessionEntry): AssistantTurn | "abort" | "skip" {
+  // Delegation's terminal totals do not cover these other Pi charges.
+  if (entry.type === "usage" || entry.type === "compaction" || entry.type === "branch_summary") return "abort";
+  if (entry.type !== "message" || entry.message.role !== "assistant") return "skip";
+  const { provider, model, usage, stopReason } = entry.message;
+  if (!provider || !model || !usage || stopReason === "error" || stopReason === "aborted" || stopReason === "pending" || stopReason === "deferred") return "abort";
+  const { input, output, cacheRead, cacheWrite, totalTokens, cost } = usage;
+  if (!cost || !categories.every((key) => Number.isSafeInteger(usage[key]) && usage[key] >= 0 && nonnegative(cost[key])) ||
+      !Number.isSafeInteger(totalTokens) || totalTokens <= 0 || totalTokens !== input + output + cacheRead + cacheWrite ||
+      !nonnegative(cost.total)) return "abort";
+  if (cost.totalFromProvider !== true &&
+      (cost.total === 0 || !close(cost.total, categories.reduce((sum, key) => sum + cost[key], 0)))) return "abort";
+  return { provider, model, usage, tokens: { input, output, cacheRead, cacheWrite, cost: cost.total } };
+}
+
 export function reconcileChildCost(entries: SessionEntry[], terminal: RunUsage & { turns: number }, lookup: (provider: string, model: string) => ModelCost | undefined): CostEvidence | undefined {
   const models = new Map<string, CostModel>();
   const total = emptyUsage();
   let turns = 0;
   for (const entry of entries) {
-    // Delegation's terminal totals do not cover these other Pi charges.
-    if (entry.type === "usage" || entry.type === "compaction" || entry.type === "branch_summary") return;
-    if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-    const { provider, model, usage, stopReason } = entry.message;
-    if (!provider || !model || !usage || stopReason === "error" || stopReason === "aborted" || stopReason === "pending" || stopReason === "deferred") return;
-    const { input, output, cacheRead, cacheWrite, totalTokens, cost } = usage;
-    if (!cost || !categories.every((key) => Number.isSafeInteger(usage[key]) && usage[key] >= 0 && nonnegative(cost[key])) ||
-        !Number.isSafeInteger(totalTokens) || totalTokens <= 0 || totalTokens !== input + output + cacheRead + cacheWrite ||
-        !nonnegative(cost.total)) return;
-    if (cost.totalFromProvider !== true &&
-        (cost.total === 0 || !close(cost.total, categories.reduce((sum, key) => sum + cost[key], 0)))) return;
+    const turn = assistantTurn(entry);
+    if (turn === "abort") return;
+    if (turn === "skip") continue;
+    const { provider, model, usage, tokens } = turn;
     const id = `${provider}/${model}`;
     const rates = flatRates(lookup(provider, model));
-    const tokens = { input, output, cacheRead, cacheWrite, cost: cost.total };
     // Require the observed catalog components to corroborate the flat rate snapshot.
     const corroborated = rates && !usage.cacheWrite1h && categories.every((key) =>
-      close(cost[key], tokens[key] / 1_000_000 * rates[key]));
+      close(usage.cost[key], tokens[key] / 1_000_000 * rates[key]));
     const row = models.get(id) ?? { model: id, usage: emptyUsage(), rates };
     if (!corroborated) row.rates = undefined;
     models.set(id, row);
@@ -76,8 +86,10 @@ function verifiedModels(evidence: CostEvidence | undefined, terminal: RunUsage):
 
 export type CostSession = { key: string; timestamp: string; entries: SessionEntry[] };
 
-export function summarizeCosts(sessions: CostSession[]) {
-  const bySession = new Map<string, { timestamp: string; requests: Map<string, RunReceipt[]> }>();
+type SessionReceipts = { timestamp: string; requests: Map<string, RunReceipt[]> };
+
+function groupReceipts(sessions: CostSession[]) {
+  const bySession = new Map<string, SessionReceipts>();
   const owners = new Map<string, Set<string>>();
   const runRequests = new Map<string, Set<string>>();
   const seen = new Set<string>();
@@ -103,53 +115,73 @@ export function summarizeCosts(sessions: CostSession[]) {
       if (run.runId) remember(runRequests, run.runId, JSON.stringify([key, run.requestId]));
     }
   }
+  return { bySession, owners, runRequests };
+}
+
+type RequestOutcome =
+  | { kind: "unresolved" | "rejected" | "legacy" }
+  | { kind: "collected"; usage: RunUsage; evidence: CostModel[] | undefined };
+
+function classifyRequest(id: string, receipts: RunReceipt[], owners: Map<string, Set<string>>, runRequests: Map<string, Set<string>>): RequestOutcome {
+  const terminal = receipts.find(({ status }) => status !== "submitted");
+  if (receipts.length !== 2 || receipts.filter(({ status }) => status === "submitted").length !== 1 || !terminal || owners.get(id)!.size !== 1) {
+    return { kind: "unresolved" };
+  }
+  if (terminal.status === "invalid_request" && !terminal.runId) return { kind: "rejected" };
+  const usage = reportedRunUsage(terminal.usage);
+  if (!terminal.runId || runRequests.get(terminal.runId)!.size !== 1 || !usage) return { kind: "unresolved" };
+  if (terminal.costAccounting?.version !== 1) return { kind: "legacy" };
+  const evidence = terminal.status === "completed" ? verifiedModels(terminal.costAccounting.evidence, usage) : undefined;
+  return { kind: "collected", usage, evidence };
+}
+
+function mergeAttribution(models: Map<string, CostModel>, evidence: CostModel[]) {
+  for (const model of evidence) {
+    const row = models.get(model.model) ?? { ...model, usage: emptyUsage() };
+    if (!model.rates || !row.rates || !sameRates(model.rates, row.rates)) row.rates = undefined;
+    add(row.usage, model.usage);
+    models.set(model.model, row);
+  }
+}
+
+// Savings are only computed for fully collected, fully attributed sessions with flat rates for every model.
+function sessionSavings(total: RunUsage, attribution: CostModel[], complete: boolean) {
+  const prices = attribution.map(({ model, rates }) => ({ model, cost: rates ? price(total, rates) : NaN }));
+  const eligible = complete && prices.every(({ cost }) => Number.isFinite(cost));
+  const baseline = eligible ? prices.reduce((highest, candidate) => candidate.cost > highest.cost ? candidate : highest) : undefined;
+  return { baseline, savings: baseline && baseline.cost - total.cost };
+}
+
+export function summarizeCosts(sessions: CostSession[]) {
+  const { bySession, owners, runRequests } = groupReceipts(sessions);
   const rows = [...bySession].flatMap(([key, { timestamp, requests }]) => {
     if (!requests.size) return [];
     const total = emptyUsage();
     const models = new Map<string, CostModel>();
     const unattributed = emptyUsage();
-    let rejected = 0, unresolved = 0, legacy = 0, collected = 0, unattributedCount = 0;
+    const counts = { rejected: 0, unresolved: 0, legacy: 0 };
+    let collected = 0, unattributedCount = 0;
     for (const [id, receipts] of requests) {
-      const terminal = receipts.find(({ status }) => status !== "submitted");
-      if (receipts.length !== 2 || receipts.filter(({ status }) => status === "submitted").length !== 1 || !terminal || owners.get(id)!.size !== 1) {
-        unresolved++;
-        continue;
-      }
-      if (terminal.status === "invalid_request" && !terminal.runId) {
-        rejected++;
-        continue;
-      }
-      const usage = reportedRunUsage(terminal.usage);
-      if (!terminal.runId || runRequests.get(terminal.runId)!.size !== 1 || !usage) {
-        unresolved++;
-        continue;
-      }
-      if (terminal.costAccounting?.version !== 1) {
-        legacy++;
+      const outcome = classifyRequest(id, receipts, owners, runRequests);
+      if (outcome.kind !== "collected") {
+        counts[outcome.kind]++;
         continue;
       }
       collected++;
-      add(total, usage);
-      const evidence = terminal.status === "completed" ? verifiedModels(terminal.costAccounting.evidence, usage) : undefined;
-      if (!evidence) {
+      add(total, outcome.usage);
+      if (!outcome.evidence) {
         unattributedCount++;
-        add(unattributed, usage);
+        add(unattributed, outcome.usage);
         continue;
       }
-      for (const model of evidence) {
-        const row = models.get(model.model) ?? { ...model, usage: emptyUsage() };
-        if (!model.rates || !row.rates || !sameRates(model.rates, row.rates)) row.rates = undefined;
-        add(row.usage, model.usage);
-        models.set(model.model, row);
-      }
+      mergeAttribution(models, outcome.evidence);
     }
+    const { rejected, unresolved, legacy } = counts;
     const attribution = [...models.values()];
-    const prices = attribution.map(({ model, rates }) => ({ model, cost: rates ? price(total, rates) : NaN }));
-    const eligible = collected > 0 && !legacy && !unresolved && !unattributedCount && prices.every(({ cost }) => Number.isFinite(cost));
-    const baseline = eligible ? prices.reduce((highest, candidate) => candidate.cost > highest.cost ? candidate : highest) : undefined;
+    const { baseline, savings } = sessionSavings(total, attribution, collected > 0 && !legacy && !unresolved && !unattributedCount);
     return [{ key, timestamp, requests: requests.size, rejected, unresolved, legacy, collected,
       total: collected ? total : undefined, unattributed: unattributedCount ? unattributed : undefined,
-      attribution, baseline, savings: baseline && baseline.cost - total.cost }];
+      attribution, baseline, savings }];
   });
   const eligible = rows.flatMap(({ savings }) => savings === undefined ? [] : [savings]);
   const overall = eligible.length ? eligible.reduce((sum, savings) => sum + savings, 0) : undefined;
