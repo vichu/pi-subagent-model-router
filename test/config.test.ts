@@ -6,7 +6,7 @@ const base = { version: 1, routes: [route] };
 const parse = (value: unknown) => parseConfig(JSON.stringify(value));
 
 test("defaults to Jev, then Decisions API", () => {
-  expect(parse(base)).toEqual({ enabled: true, debug: false, routes: [route], classifiers: ["typesafe/jev-latest", "openai/gpt-6-luna"] });
+  expect(parse(base)).toEqual({ enabled: true, routes: [route], classifiers: ["typesafe/jev-latest", "openai/gpt-6-luna"] });
 });
 
 test("parseConfig drops a stale route agent key like other unknown fields", () => {
@@ -18,9 +18,11 @@ test("accepts an explicit enable or disable setting", () => {
   expect(parse({ ...base, enabled: false }).enabled).toBe(false);
 });
 
-test("accepts an explicit debug setting", () => {
+test("keeps debug only when true so a saved router.json omits the default", () => {
   expect(parse({ ...base, debug: true }).debug).toBe(true);
-  expect(parse({ ...base, debug: false }).debug).toBe(false);
+  expect(Object.hasOwn(parse({ ...base, debug: false }), "debug")).toBe(false);
+  const saved = JSON.stringify({ version: 1, ...parse({ ...base, debug: true }) });
+  expect(parseConfig(saved).debug).toBe(true);
 });
 
 test("reads explicit backend overrides and model settings", () => {

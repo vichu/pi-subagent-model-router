@@ -43,7 +43,7 @@ export function runSessionKey(manager: ExtensionCommandContext["sessionManager"]
   return JSON.stringify([header.id, header.timestamp]);
 }
 
-function runReceipts(entries: SessionEntry[]) {
+export function runReceipts(entries: readonly SessionEntry[]) {
   return entries.flatMap((entry) => entry.type === "custom" && entry.customType === runEntryType && entry.data
     ? [{ id: entry.id, receipt: entry.data as RunReceipt }] : []);
 }

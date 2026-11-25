@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { getKeybindings, type Component } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { showConfigMenu } from "../src/config-menu.ts";
 
@@ -124,8 +125,35 @@ test("toggles routing through the config menu without changing routes", async ()
   expect(enable.ui.setStatus).toHaveBeenLastCalledWith("pi-subagent-model-router", "Router: enabled");
 });
 
+test("toggles debug decisions and writes debug only while it is on", async () => {
+  const enable = setup(["Debug decisions", "On"]);
+  await enable.run();
+  expect(enable.ui.select).toHaveBeenCalledWith("Debug decisions", ["On", "Off"]);
+  expect(await stored()).toMatchObject({ debug: true, enabled: true, routes: base.routes });
+  const disable = setup(["Debug decisions", "Off"]);
+  await disable.run();
+  expect(await stored()).not.toHaveProperty("debug");
+  expect(await stored()).toMatchObject({ routes: base.routes, base_agent: base.base_agent });
+});
+
+test("shows the debug state and its privacy effect in the rubric", async () => {
+  await writeFile(path, JSON.stringify({ ...base, debug: true }));
+  let view!: Component;
+  const custom = vi.fn((factory) => {
+    view = factory({ requestRender: vi.fn() }, { fg: (_color: string, text: string) => text, bold: (text: string) => text }, getKeybindings(), vi.fn());
+    return new Promise(() => {});
+  });
+  const ctx = { hasUI: true, mode: "tui", ui: { custom, setStatus: vi.fn(), notify: vi.fn() } } as unknown as ExtensionCommandContext;
+  void showConfigMenu(ctx, path, new AbortController().signal);
+  await vi.waitFor(() => expect(custom).toHaveBeenCalled());
+  view.handleInput!("\x1b[A");
+  const screen = view.render(200).join("\n");
+  expect(screen).toContain("Debug decisions: On");
+  expect(screen).toContain("store the full task text");
+});
+
 test.each<[string[], string[]]>([
-  [[], []], [["Router status"], []], [["Router status", "unknown"], []], [["unknown route"], []], [[route], []], [[route, "Label"], []], [[route, "Thinking"], []], [[route, "Model"], []],
+  [[], []], [["Router status"], []], [["Router status", "unknown"], []], [["Debug decisions"], []], [["unknown route"], []], [[route], []], [[route, "Label"], []], [[route, "Thinking"], []], [[route, "Model"], []],
   [["Classifier order"], []], [["Base model"], []], [["Routing model", "Set model and thinking"], []],
   [["Routing model", "Set model and thinking", "demo/new"], []],
   [["Add route"], []], [["Add route"], ["key"]], [["Add route"], ["key", "Label"]],

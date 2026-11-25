@@ -667,3 +667,40 @@ test.each(["config read", "preflight"])("records cancellation during the %s as a
   await hookCall;
   expect(decisionsOf(fixture)).toEqual([expect.objectContaining({ outcome: "skipped", reason: "aborted" })]);
 });
+
+test("shows the last recorded decision in the status line while blocking states take precedence", async () => {
+  const fixture = await setup();
+  const status = () => fixture.ctx.ui.setStatus.mock.lastCall;
+  await withClassifier(fixture);
+  await fixture.call();
+  expect(status()).toEqual(["pi-subagent-model-router", "Router: enabled · last: example → routed"]);
+  await fixture.call({ ...nativeCall, priority: "high" });
+  expect(status()).toEqual(["pi-subagent-model-router", "Router: enabled · last: skipped (unrecognized_params)"]);
+  await withClassifier(fixture, 0.2);
+  await fixture.call();
+  expect(status()).toEqual(["pi-subagent-model-router", "Router: enabled · last: fallback → routed"]);
+  await fixture.write(fixture.configFile, { ...fixture.config, base_agent: undefined, classifiers: [] });
+  await fixture.call();
+  expect(status()).toEqual(["pi-subagent-model-router", "Router: enabled · last: error (routing)"]);
+  fixture.getAllTools.mockReturnValueOnce([]);
+  await fixture.call();
+  expect(status()).toEqual(["pi-subagent-model-router", "Router: pi-subagents incompatible"]);
+  await fixture.write(fixture.configFile, { ...fixture.config, enabled: false });
+  await fixture.call();
+  expect(status()).toEqual(["pi-subagent-model-router", "Router: disabled"]);
+});
+
+test("notifies a one-line summary of each decision recorded with debug on", async () => {
+  const fixture = await setup();
+  const notify = fixture.ctx.ui.notify;
+  await fixture.call();
+  expect(notify).not.toHaveBeenCalled();
+  await fixture.write(fixture.configFile, { ...fixture.config, debug: true });
+  await fixture.call();
+  await fixture.call({ ...nativeCall, label: "Sample", priority: "high" });
+  expect(notify.mock.calls).toEqual([
+    ["Router decision: ↺ fallback → demo/routed:low · custom-persona", "info"],
+    [expect.stringContaining("unrecognized parameter(s) priority"), "warning"],
+    ["Router decision: ↷ skipped · unrecognized_params · custom-persona", "info"],
+  ]);
+});

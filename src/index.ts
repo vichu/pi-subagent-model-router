@@ -9,6 +9,7 @@ import type {
 
 import { showConfigMenu } from "./config-menu.ts";
 import { captureChildCost, defaultChildSessionFile, showCostDashboard } from "./cost-dashboard.ts";
+import { showDecisions } from "./decisions-view.ts";
 import { registerNativeRouting } from "./native-routing.ts";
 import { pickConfigItem } from "./config-picker.ts";
 import { type RouterConfig, parseConfig, routerCommand } from "./config.ts";
@@ -35,6 +36,7 @@ const homeActions = [
   { value: "Run a brief", label: "Run a brief", description: "Classify a task and start a text-only worker" },
   { value: "Rubric and settings", label: "Rubric and settings", description: "Browse routes, edit models and thinking, or toggle routing" },
   { value: "Session history", label: "Session history", description: "Inspect routed foreground subagents, briefs, and older receipts" },
+  { value: "Routing decisions", label: "Routing decisions", description: "Inspect every subagent call the router evaluated, with classification and skip reasons" },
   { value: "Router status", label: "Router status", description: "Toggle model routing without disabling native delegation" },
   { value: "Cost dashboard", label: "Cost dashboard", description: "Inspect saved router receipt costs and estimated savings" },
 ];
@@ -211,6 +213,9 @@ export default function router(pi: ExtensionAPI) {
             break;
           case "Session history":
             await showHistory(ctx);
+            break;
+          case "Routing decisions":
+            await showDecisions(ctx, configFile, session.signal);
             break;
           case "Router status":
             await showConfigMenu(ctx, configFile, session.signal, "status");

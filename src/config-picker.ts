@@ -2,7 +2,8 @@ import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { fuzzyFilter, Input, replaceControlCharacters, SelectList, type SelectItem, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 export type PickerItem = SelectItem & { preview?: string };
-type PickerOptions = { search?: boolean; current?: string; hint?: string; previewLines?: number };
+// labelWidth widens the label column up to that many cells for long labels; the default column is 32 cells.
+type PickerOptions = { search?: boolean; current?: string; hint?: string; previewLines?: number; labelWidth?: number };
 
 type PickerContext = Pick<ExtensionCommandContext, "mode" | "ui">;
 
@@ -19,7 +20,7 @@ export function pickConfigItem(ctx: PickerContext, title: string, items: PickerI
       description: muted,
       scrollInfo: muted,
       noMatch: () => muted("  No matching options"),
-    });
+    }, { minPrimaryColumnWidth: 32, maxPrimaryColumnWidth: options.labelWidth });
     let list = makeList(items);
     const bind = () => {
       list.onSelect = ({ value }) => done(value);

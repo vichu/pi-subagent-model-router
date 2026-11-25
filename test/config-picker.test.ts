@@ -66,3 +66,14 @@ test("uses standard Pi dialogs outside the terminal UI", async () => {
   await expect(pickConfigItem({ mode: "rpc", ui }, "Rubric", rows)).resolves.toBe("review");
   expect(select).toHaveBeenCalledWith("Rubric", ["writing", "review"]);
 });
+
+test("widens the label column up to labelWidth so long labels are not truncated", () => {
+  const label = "✓ code_review → openai-codex/gpt-6-luna:high";
+  const items = [{ value: "row", label, description: "reviewer" }];
+  const narrow = setup();
+  pickConfigItem(narrow.ctx, "Decisions", items);
+  expect(narrow.component().render(120).join("\n")).not.toContain(label);
+  const wide = setup();
+  pickConfigItem(wide.ctx, "Decisions", items, { labelWidth: 56 });
+  expect(wide.component().render(120).join("\n")).toContain(`${label}  reviewer`);
+});
