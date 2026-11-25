@@ -46,7 +46,7 @@ The router does not require a specific `pi-subagents` version. It checks that th
 Install the router release that includes native routing, then restart Pi:
 
 ```sh
-pi install npm:pi-subagent-model-router@0.4.0
+pi install npm:pi-subagent-model-router@0.5.0
 ```
 
 To try a checkout without changing your Pi settings, see [Local smoke test](#local-smoke-test).
