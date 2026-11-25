@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { SessionManager, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { SubagentDelegationTerminalResponse } from "pi-subagents/delegation";
 import { afterEach, expect, test, vi } from "vitest";
-import { captureChildCost, showCostDashboard } from "../src/cost-dashboard.ts";
+import { captureChildCost, defaultChildSessionFile, showCostDashboard } from "../src/cost-dashboard.ts";
 import { pickConfigItem } from "../src/config-picker.ts";
 import { runEntryType } from "../src/history.ts";
 
@@ -60,20 +60,22 @@ test("captureChildCost reads and reconciles the 0.89.1 default fresh child file 
   const child = join(dir, "parent", runId, "run-0", "session.jsonl");
   const { ctx, find } = fixture();
   const response = { runId, model: "demo/requested", status: "completed", usage: { ...usage, turns: 1 } } as SubagentDelegationTerminalResponse;
-  expect(await captureChildCost(ctx, null, response)).toBeUndefined();
-  expect(await captureChildCost(ctx, parent, { ...response, status: "failed" })).toBeUndefined();
-  expect(await captureChildCost(ctx, parent, { ...response, usage: undefined })).toBeUndefined();
-  expect(await captureChildCost(ctx, parent, { ...response, runId: "../other" })).toBeUndefined();
-  expect(await captureChildCost(ctx, parent, { ...response, runId: "-".repeat(36) })).toBeUndefined();
+  expect(defaultChildSessionFile(null, runId)).toBeUndefined();
+  expect(defaultChildSessionFile(parent, "../other")).toBeUndefined();
+  expect(defaultChildSessionFile(parent, "-".repeat(36))).toBeUndefined();
+  expect(defaultChildSessionFile(parent, undefined)).toBeUndefined();
+  expect(defaultChildSessionFile(parent, runId)).toBe(child);
+  expect(await captureChildCost(ctx, undefined, response)).toBeUndefined();
+  expect(await captureChildCost(ctx, child, { ...response, status: "failed" })).toBeUndefined();
+  expect(await captureChildCost(ctx, child, { ...response, usage: undefined })).toBeUndefined();
   expect(open).not.toHaveBeenCalled();
-  expect(await captureChildCost(ctx, parent, { ...response, runId: undefined })).toBeUndefined();
-  expect(await captureChildCost(ctx, parent, response)).toBeUndefined();
+  expect(await captureChildCost(ctx, child, response)).toBeUndefined();
   await mkdir(dirname(child), { recursive: true });
   await writeSession(child, header("child"), { type: "message", message: { role: "assistant", provider: "demo", model: "used", stopReason: "stop", content: [{ text: "private" }],
     usage: { ...usage, totalTokens: 4e6, cost: { ...rates, total: 11, totalFromProvider: true } },
   } });
   vi.mocked(open).mockClear();
-  expect(await captureChildCost(ctx, parent, response)).toEqual({ models: [{ model: "demo/used", usage, rates }] });
+  expect(await captureChildCost(ctx, child, response)).toEqual({ models: [{ model: "demo/used", usage, rates }] });
   expect(open).toHaveBeenCalledExactlyOnceWith(child, "r");
   expect(find).toHaveBeenCalledExactlyOnceWith("demo", "used");
 });
@@ -94,7 +96,7 @@ test("showCostDashboard scans saved files, reports exclusions and shows historic
   const { ctx, select, find } = fixture("current", current);
   await showCostDashboard(ctx, new AbortController().signal);
   const [report] = select.mock.calls[0];
-  expect(report).toContain("Forward-only · router-launched direct workers");
+  expect(report).toContain("Forward-only · routed foreground subagents and briefs");
   expect(report).toContain("Estimated savings: −$1.0000 across 1/3 recorded sessions");
   expect(report).toContain("Average per eligible session: −$1.0000");
   expect(report).toContain("2 other files read / 6 skipped / 9 listed");

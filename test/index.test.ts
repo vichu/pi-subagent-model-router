@@ -109,7 +109,7 @@ test("initializes the footer from config on session start", async () => {
 
 test("registers a native tool hook without installing a replacement tool or changing the parent", () => {
   const { on, registerTool, setModel, setThinkingLevel, setActiveTools } = setup();
-  expect(on.mock.calls.map(([event]) => event)).toEqual(["tool_call", "session_shutdown", "session_start"]);
+  expect(on.mock.calls.map(([event]) => event)).toEqual(["tool_call", "tool_execution_end", "session_shutdown", "session_start"]);
   for (const fn of [registerTool, setModel, setThinkingLevel, setActiveTools]) expect(fn).not.toHaveBeenCalled();
 });
 
@@ -402,7 +402,7 @@ test("fails promptly when no compatible pi-subagents bridge acknowledges the man
     bus.emit(startedEvent, { ...req, requestId: "other" });
   });
   await run();
-  expect(notify).toHaveBeenCalledWith(expect.stringContaining("pi install npm:pi-subagents@0.89.1"), "error");
+  expect(notify).toHaveBeenCalledWith(expect.stringContaining("pi install npm:pi-subagents)"), "error");
   expect(bus.listenerCount(startedEvent)).toBe(0);
   expect(bus.listenerCount(responseEvent)).toBe(0);
   expect(appendEntry).toHaveBeenLastCalledWith(runEntryType, expect.objectContaining({ status: "unavailable_context" }));

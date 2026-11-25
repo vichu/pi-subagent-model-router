@@ -8,7 +8,7 @@ import type {
 } from "pi-subagents/delegation";
 
 import { showConfigMenu } from "./config-menu.ts";
-import { captureChildCost, showCostDashboard } from "./cost-dashboard.ts";
+import { captureChildCost, defaultChildSessionFile, showCostDashboard } from "./cost-dashboard.ts";
 import { registerNativeRouting } from "./native-routing.ts";
 import { pickConfigItem } from "./config-picker.ts";
 import { type RouterConfig, parseConfig, routerCommand } from "./config.ts";
@@ -31,6 +31,13 @@ const maxDelegationTimeoutMs = 2_147_483_647;
 const maxDelegationTaskBytes = 1024 * 1024;
 const configFile = new URL("../router.json", import.meta.url);
 const intercomBridge = { mode: "off" } as const;
+const homeActions = [
+  { value: "Run a brief", label: "Run a brief", description: "Classify a task and start a text-only worker" },
+  { value: "Rubric and settings", label: "Rubric and settings", description: "Browse routes, edit models and thinking, or toggle routing" },
+  { value: "Session history", label: "Session history", description: "Inspect routed foreground subagents, briefs, and older receipts" },
+  { value: "Router status", label: "Router status", description: "Toggle model routing without disabling native delegation" },
+  { value: "Cost dashboard", label: "Cost dashboard", description: "Inspect saved router receipt costs and estimated savings" },
+];
 
 function launch(
   events: ExtensionAPI["events"],
@@ -73,8 +80,8 @@ function launch(
       cleanup();
       return reject(new Error("Could not send the delegation request. Check Pi's extension setup and restart Pi."));
     }
-    // With Pi's synchronous event dispatch, pi-subagents 0.89.1 emits
-    // started (or a terminal response) before its first await.
+    // With Pi's synchronous event dispatch, pi-subagents emits started
+    // (or a terminal response) before its first await.
     offStarted();
     if (!acknowledged && !signal.aborted) {
       cleanup();
@@ -85,13 +92,13 @@ function launch(
 
 function childFailure(response: SubagentDelegationResponse, agent: string, model: string) {
   if (response.status === "invalid_request") {
-    return "pi-subagents rejected the delegation request (invalid_request). Check that the running extension is pi-subagents 0.89.1.";
+    return "pi-subagents rejected the delegation request (invalid_request). Check that the running extension is a current pi-subagents release.";
   }
   if (response.error?.startsWith(`Unknown agent: ${agent}`)) {
     return `Unknown agent: ${agent}. Install the router as a Pi package or run from its trusted checkout root so pi-subagents can discover agents/router-spike-worker.md. Check that the agent is not disabled by a subagent settings override.`;
   }
   if (response.status === "unavailable_context") {
-    return `pi-subagents delegation unavailable (${response.status}). Install or enable pi-subagents 0.89.1 (pi install npm:pi-subagents@0.89.1), then restart Pi.`;
+    return `pi-subagents delegation unavailable (${response.status}). Install or enable pi-subagents (pi install npm:pi-subagents), then restart Pi.`;
   }
   // A bridge error can include raw provider responses or credentials.
   return `Agent ${agent} did not return text successfully (${response.status}; requested ${model}). For worker failures, check that this chat model and its credentials are usable by the child, and inspect the pi-subagents run locally if one was created.`;
@@ -136,7 +143,7 @@ export default function router(pi: ExtensionAPI) {
     const effective = response.status === "invalid_request" ? {} : {
       agent: response.agent ?? agent, runId: response.runId, model: response.model, thinking: response.thinking,
       usage,
-      costAccounting: usage ? { version: 1 as const, evidence: await captureChildCost(ctx, parentFile, response) } : undefined,
+      costAccounting: usage ? { version: 1 as const, evidence: await captureChildCost(ctx, defaultChildSessionFile(parentFile, response.runId), response) } : undefined,
     };
     if (sessionKey === runSessionKey(ctx.sessionManager)) {
       pi.appendEntry<RunReceipt>(runEntryType, { ...receipt, ...effective, status: response.status });
@@ -174,13 +181,6 @@ export default function router(pi: ExtensionAPI) {
     }
   }
 
-  const actions = [
-    { value: "Run a brief", label: "Run a brief", description: "Classify a task and start a text-only worker" },
-    { value: "Rubric and settings", label: "Rubric and settings", description: "Browse routes, edit models and thinking, or toggle routing" },
-    { value: "Session history", label: "Session history", description: "Inspect manual brief runs and older router receipts" },
-    { value: "Router status", label: "Router status", description: "Toggle model routing without disabling native delegation" },
-    { value: "Cost dashboard", label: "Cost dashboard", description: "Inspect saved router receipt costs and estimated savings" },
-  ];
   pi.registerCommand(routerCommand, {
     description: "Open the inline subagent router workspace",
     async handler(_args, ctx) {
@@ -189,7 +189,7 @@ export default function router(pi: ExtensionAPI) {
         return;
       }
       while (!session.signal.aborted) {
-        const action = await pickConfigItem(ctx, "Subagent router · home", actions);
+        const action = await pickConfigItem(ctx, "Subagent router · home", homeActions);
         switch (action) {
           case "Run a brief": {
             const brief = await ctx.ui.editor("Subagent router · enter a task brief (Esc to go back)");

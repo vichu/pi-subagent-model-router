@@ -1,7 +1,6 @@
 import { open } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { SessionManager, type ExtensionCommandContext, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { SubagentDelegationTerminalResponse } from "pi-subagents/delegation";
 import { pickConfigItem } from "./config-picker.ts";
 import { reconcileChildCost, summarizeCosts, type CostSession } from "./cost-accounting.ts";
 import { type RunUsage, runEntryType, runSessionKey } from "./history.ts";
@@ -26,13 +25,17 @@ async function readSession(path: string) {
   }
 }
 
-export async function captureChildCost(ctx: ExtensionContext, parentFile: string | null | undefined, terminal: SubagentDelegationTerminalResponse) {
-  if (!parentFile || !terminal.usage || terminal.status !== "completed" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(terminal.runId ?? "")) return;
-  // Structured delegation in 0.89.1 does not expose sessionFile. Use only its
-  // default fresh single-leaf location, then reconcile against the wire totals.
-  const path = join(dirname(parentFile), basename(parentFile, ".jsonl"), terminal.runId!, "run-0", "session.jsonl");
+// Structured delegation does not expose sessionFile. Use only its default fresh single-leaf location.
+export function defaultChildSessionFile(parentFile: string | null | undefined, runId: string | undefined) {
+  if (!parentFile || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(runId ?? "")) return;
+  return join(dirname(parentFile), basename(parentFile, ".jsonl"), runId!, "run-0", "session.jsonl");
+}
+
+/** Attributes a completed child's terminal totals by reconciling them against its session file. */
+export async function captureChildCost(ctx: ExtensionContext, sessionFile: string | undefined, terminal: { status: string; usage?: RunUsage & { turns: number } }) {
+  if (!sessionFile || !terminal.usage || terminal.status !== "completed") return;
   try {
-    const { entries } = await readSession(path);
+    const { entries } = await readSession(sessionFile);
     return reconcileChildCost(entries, terminal.usage, (provider, model) => ctx.modelRegistry.find(provider, model)?.cost);
   } catch {
     return undefined; // Never turn an accounting failure into a delegation failure.
@@ -73,7 +76,7 @@ export async function showCostDashboard(ctx: ExtensionCommandContext, signal: Ab
   const { rows, eligible, overall, average } = summarizeCosts(sessions);
   const title = "Subagent router · Cost dashboard";
   const summary = [
-    "Forward-only · router-launched direct workers · USD",
+    "Forward-only · routed foreground subagents and briefs · USD",
     `Estimated savings: ${money(overall)} across ${eligible}/${rows.length} recorded sessions`,
     `Average per eligible session: ${money(average)}`,
     discoveryFailed ? "Saved-session discovery unavailable · current session only" : `Current + up to ${scanLimit} recent saved sessions (Pi activity order)`,
