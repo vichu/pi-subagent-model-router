@@ -30,7 +30,7 @@ The router does not require a specific `pi-subagents` version. It checks that th
 Install the router release that includes native routing, then restart Pi:
 
 ```sh
-pi install npm:pi-subagent-model-router@0.5.1
+pi install npm:pi-subagent-model-router@0.5.2
 ```
 
 To try a checkout without changing your Pi settings, see [Local smoke test](#local-smoke-test).
@@ -211,7 +211,7 @@ npm run typecheck
 npm test
 ```
 
-Unit tests mock the model registry and delegation events. The offline integration test runs Pi 1.5.2 and the locked pi-subagents version with a loopback model endpoint and verifies the child model and thinking received by it, without live credentials. The coverage gate requires 100% of statements, branches, functions, and lines for each runtime source file.
+Unit tests mock the model registry and delegation events. The offline integration test runs the locked Pi and pi-subagents versions with a loopback model endpoint and verifies the child model and thinking received by it, without live credentials. The coverage gate requires 100% of statements, branches, functions, and lines for each runtime source file.
 
 ### Releases and changelog
 
