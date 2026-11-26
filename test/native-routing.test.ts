@@ -70,7 +70,7 @@ async function setup() {
   await write(preflightPath, "export const { resolveSubagentLaunchContract } = globalThis.nativeRoutingTestApis;");
   await write(ceilingPath, "export const { resolveCurrentSubagentCapabilityCeiling } = globalThis.nativeRoutingTestApis;");
   await write(agentFile, "---\nname: custom-persona\n---\nRead-only test persona.");
-  const config = { version: 1, classifiers: [], routes: [{ name: "example", label: "Example", when_to_use: "Describe the sample", ...base }], base_agent: base };
+  const config = { version: 1, classifiers: [], routes: [{ name: "example", label: "Example", when_to_use: "Describe the sample", ...base }] };
   await write(configFile, config);
   const response = (patch: Record<string, unknown> = {}) => ({ ok: true, contract: {
     agent: { source: "project", filePath: agentFile, shadowedCandidates: [], definitionDigest: "digest" }, diagnostics: [], ...patch,
@@ -83,6 +83,8 @@ async function setup() {
   const registry = { getAvailable: () => [model], getAll: () => [model], find: vi.fn().mockReturnValue(model),
     getProvider: vi.fn(), hasConfiguredAuth: vi.fn().mockReturnValue(true), getRegisteredProviderIds: vi.fn().mockReturnValue([]) };
   const getAllTools = vi.fn().mockReturnValue([{ name: "subagent", sourceInfo: { path: entry } }]);
+  const getActiveTools = vi.fn().mockReturnValue(["read", "subagent"]);
+  const getThinkingLevel = vi.fn().mockReturnValue("low");
   const on = vi.fn();
   const entries: SessionEntry[] = [];
   // Receipts and decisions are asserted separately; both land in the same session entries.
@@ -95,7 +97,7 @@ async function setup() {
   const getHeader = vi.fn<() => { id: string; timestamp: string } | null>().mockReturnValue(header);
   const ctx = { cwd, isProjectTrusted: vi.fn().mockReturnValue(true), scopedModels: [] as unknown[],
     model, modelRegistry: registry, ui: { setStatus: vi.fn(), notify: vi.fn() }, sessionManager: { getSessionId: () => "parent", getSessionFile: () => undefined, getLeafId: () => null, getHeader } };
-  const register = () => registerNativeRouting({ on, getAllTools, appendEntry } as unknown as ExtensionAPI, pathToFileURL(configFile), controller.signal);
+  const register = () => registerNativeRouting({ on, getAllTools, getActiveTools, getThinkingLevel, appendEntry } as unknown as ExtensionAPI, pathToFileURL(configFile), controller.signal);
   register();
   const hook = <T>(name: string) => on.mock.calls.findLast(([event]) => event === name)![1] as (event: T, ctx: ExtensionContext) => Promise<unknown>;
   const call = async (value: Record<string, unknown> = nativeCall, patch: Record<string, unknown> = {}, signal?: AbortSignal) => {
@@ -106,11 +108,20 @@ async function setup() {
   const end = async (result: unknown, isError = false, toolCallId = "child") => {
     expect(await hook<ToolExecutionEndEvent>("tool_execution_end")({ type: "tool_execution_end", toolName: "subagent", toolCallId, result, isError }, ctx as unknown as ExtensionContext)).toBeUndefined();
   };
-  return { dir, write, call, end, entries, appendEntry, appendReceipt, appendDecision, getHeader, ctx, registry, model, getAllTools, controller, register, manifest, nativeManifest, preflightPath, ceilingPath, agentFile, configFile, config, response, userSettings, projectSettings, nativeConfig };
+  const invokeCodemode = (parentToolCallId?: string, signal?: AbortSignal) => hook("tool_call")({
+    type: "tool_call", toolCallId: "script", toolName: "codemode", parentToolCallId, input: { code: "return 42;" },
+  }, { ...ctx, signal } as unknown as ExtensionContext);
+  const endTurn = () => hook("agent_end")({}, ctx as unknown as ExtensionContext);
+  const start = (messageType = "user", signal?: AbortSignal) => hook("before_agent_start")(
+    { messageType, systemPrompt: "Existing prompt" }, { ...ctx, signal } as unknown as ExtensionContext,
+  );
+  return { dir, write, call, end, invokeCodemode, endTurn, start, getActiveTools, getThinkingLevel, entries, appendEntry, appendReceipt, appendDecision, getHeader, ctx, registry, model, getAllTools, controller, register, manifest, nativeManifest, preflightPath, ceilingPath, agentFile, configFile, config, response, userSettings, projectSettings, nativeConfig };
 }
 
 test("sets only the native model argument and doesn't impose an agent or run mode", async () => {
-  const { call, agentFile, write, ctx } = await setup();
+  const fixture = await setup();
+  await withClassifier(fixture);
+  const { call, agentFile, write, ctx } = fixture;
   ctx.model = undefined as unknown as typeof ctx.model;
   await write(agentFile, "---\nname: custom-persona\nrunner: {type: pi}\n---\nReader.");
   expect(await call({ ...nativeCall, async: false }, {}, new AbortController().signal)).toEqual({ ...nativeCall, async: false, model: "demo/routed:low" });
@@ -509,6 +520,140 @@ test("records a routed decision with its classification trace and the receipts' 
   expect(linked.receipts.map(({ status }) => status)).toEqual(["submitted", "completed"]);
 });
 
+test.each([
+  { loaded: false, message: "pi install npm:pi-subagents" },
+  { loaded: true, message: "enable the subagent tool in Pi's active tools" },
+])("explains why automatic delegation is unavailable (native tool loaded: $loaded)", async ({ loaded, message }) => {
+  const fixture = await setup();
+  Object.assign(fixture.ctx, { hasUI: true });
+  if (!loaded) fixture.getAllTools.mockReturnValue([]);
+  fixture.getActiveTools.mockReturnValue(["read"]);
+
+  await fixture.write(fixture.configFile, { ...fixture.config, enabled: false });
+  expect(await fixture.start()).toBeUndefined();
+  expect(fixture.ctx.ui.notify).not.toHaveBeenCalled();
+
+  await fixture.write(fixture.configFile, fixture.config);
+  expect(await fixture.start()).toBeUndefined();
+  expect(await fixture.start()).toBeUndefined();
+  expect(fixture.ctx.ui.notify).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(message), "warning");
+
+  fixture.getActiveTools.mockReturnValue(["read", "subagent"]);
+  expect(await fixture.start()).toEqual({ systemPrompt: expect.stringContaining("start by delegating the actual work") });
+});
+
+test("ordinary chat gets delegation guidance without launching a worker or changing the parent", async () => {
+  const fixture = await setup();
+  expect(await fixture.start()).toEqual({ systemPrompt: expect.stringMatching(/^Existing prompt[\s\S]+start by delegating the actual work/) });
+  expect(await fixture.start("custom")).toBeUndefined();
+
+  fixture.getActiveTools.mockReturnValueOnce(["read"]);
+  expect(await fixture.start()).toBeUndefined();
+  vi.stubEnv("PI_SUBAGENT_CHILD", "1");
+  expect(await fixture.start()).toBeUndefined();
+  vi.stubEnv("PI_SUBAGENT_CHILD", undefined);
+
+  await fixture.write(fixture.configFile, { ...fixture.config, enabled: false });
+  expect(await fixture.start()).toBeUndefined();
+  await fixture.write(fixture.configFile, "invalid json");
+  expect(await fixture.start()).toBeUndefined();
+  await fixture.write(fixture.configFile, fixture.config);
+  expect(await fixture.start()).toBeDefined();
+  fixture.controller.abort();
+  expect(await fixture.start()).toBeUndefined();
+  expect(preview).not.toHaveBeenCalled();
+  expect(fixture.appendEntry).not.toHaveBeenCalled();
+});
+
+test("guides and routes delegation when only the native loader is visible at the start of the turn", async () => {
+  const fixture = await setup();
+  Object.assign(fixture.ctx, { hasUI: true });
+  await withClassifier(fixture);
+  fixture.getActiveTools.mockReturnValue(["codemode", "subagents_enable"]);
+
+  const prompt = await fixture.start();
+  expect(prompt).toMatchObject({ systemPrompt: expect.stringContaining("call it first, then delegate") });
+  expect(fixture.ctx.ui.notify).not.toHaveBeenCalled();
+  expect(await fixture.invokeCodemode()).toMatchObject({
+    block: true,
+    reason: expect.stringContaining("Call subagents_enable first"),
+  });
+
+  // Native activation exposes the real tool without starting a new user turn.
+  fixture.getActiveTools.mockReturnValue(["codemode", "subagent"]);
+  expect(await fixture.call()).toMatchObject({ model: "demo/routed:low" });
+  expect(decisionsOf(fixture)).toMatchObject([{ outcome: "routed", route: "example" }]);
+
+  await fixture.start();
+  expect(await fixture.invokeCodemode()).toMatchObject({
+    block: true,
+    reason: expect.stringContaining("direct subagent call first"),
+  });
+});
+
+test("redirects the first top-level Codemode call once until the parent delegates", async () => {
+  const fixture = await setup();
+  fixture.getActiveTools.mockReturnValue(["read", "codemode", "subagent"]);
+  const redirect = { block: true, reason: expect.stringContaining("direct subagent call first") };
+
+  expect(await fixture.invokeCodemode()).toBeUndefined();
+  await fixture.start();
+  await fixture.call({ ...nativeCall, action: "list" });
+  expect(await fixture.invokeCodemode("outer")).toBeUndefined();
+  expect(await fixture.invokeCodemode()).toEqual(redirect);
+  expect(await fixture.invokeCodemode()).toBeUndefined();
+
+  await fixture.start();
+  await fixture.call({ ...nativeCall, async: false });
+  expect(await fixture.invokeCodemode()).toBeUndefined();
+
+  await fixture.start();
+  await fixture.endTurn();
+  expect(await fixture.invokeCodemode()).toBeUndefined();
+});
+
+test.each(["tool no longer active", "parent shutdown", "prompt abort", "child runtime"] as const)(
+  "does not redirect Codemode after a prepared turn becomes ineligible: %s",
+  async (change) => {
+    const fixture = await setup();
+    const turn = new AbortController();
+    expect(await fixture.start("user", turn.signal)).toBeDefined();
+
+    switch (change) {
+      case "tool no longer active": fixture.getActiveTools.mockReturnValue(["codemode"]); break;
+      case "parent shutdown": fixture.controller.abort(); break;
+      case "prompt abort": turn.abort(); break;
+      case "child runtime": vi.stubEnv("PI_SUBAGENT_CHILD", "1"); break;
+    }
+    expect(await fixture.invokeCodemode(undefined, turn.signal)).toBeUndefined();
+  },
+);
+
+test("leaves Codemode alone with routing disabled, no direct subagent, or in a child", async () => {
+  const fixture = await setup();
+  fixture.getActiveTools.mockReturnValue(["codemode"]);
+  await fixture.start();
+  expect(await fixture.invokeCodemode()).toBeUndefined();
+
+  fixture.getActiveTools.mockReturnValue(["codemode", "subagent"]);
+  await fixture.write(fixture.configFile, { ...fixture.config, enabled: false });
+  await fixture.start();
+  expect(await fixture.invokeCodemode()).toBeUndefined();
+
+  await fixture.write(fixture.configFile, fixture.config);
+  vi.stubEnv("PI_SUBAGENT_CHILD", "1");
+  await fixture.start();
+  expect(await fixture.invokeCodemode()).toBeUndefined();
+});
+
+test("uses the live session model and thinking for native fallbacks", async () => {
+  const fixture = await setup();
+  expect(await fixture.call()).toMatchObject({ model: "demo/routed:low" });
+  Object.assign(fixture.ctx, { model: { ...fixture.model, id: "changed" } });
+  fixture.getThinkingLevel.mockReturnValue("high");
+  expect(await fixture.call()).toMatchObject({ model: "demo/changed:high" });
+});
+
 test("records a base fallback decision after a classifier abstains", async () => {
   const fixture = await setup();
   await withClassifier(fixture, 0.2);
@@ -652,7 +797,7 @@ test("records the step that threw as an error decision", async () => {
   await fixture.write(fixture.userSettings, []);
   await fixture.call();
   await fixture.write(fixture.userSettings, {});
-  await fixture.write(fixture.configFile, { ...fixture.config, base_agent: undefined });
+  Object.assign(fixture.ctx, { model: undefined });
   await fixture.call();
   expect(decisionsOf(fixture).map(({ outcome, detail }) => [outcome, detail])).toEqual([["error", "settings"], ["error", "routing"]]);
 });
@@ -679,7 +824,7 @@ test("shows the last recorded decision in the status line while blocking states 
   await withClassifier(fixture, 0.2);
   await fixture.call();
   expect(status()).toEqual(["pi-subagent-model-router", "Router: enabled · last: fallback → routed"]);
-  await fixture.write(fixture.configFile, { ...fixture.config, base_agent: undefined, classifiers: [] });
+  Object.assign(fixture.ctx, { model: undefined });
   await fixture.call();
   expect(status()).toEqual(["pi-subagent-model-router", "Router: enabled · last: error (routing)"]);
   fixture.getAllTools.mockReturnValueOnce([]);

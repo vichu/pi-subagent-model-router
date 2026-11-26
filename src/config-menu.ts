@@ -134,12 +134,10 @@ async function applyAction(ctx: ExtensionCommandContext, config: RouterConfig, r
       config.classifiers = ids.split("\n").map((id) => id.trim()).filter(Boolean);
       return true;
     }
-    case "Base model":
     case "Routing model": {
-      const key = action === "Base model" ? "base_agent" : "routing_model";
-      const choice = await editOptionalModel(ctx, action, config[key]);
+      const choice = await editOptionalModel(ctx, action, config.routing_model);
       if (choice === undefined) return false;
-      config[key] = choice ?? undefined;
+      config.routing_model = choice ?? undefined;
       return true;
     }
     default: {
@@ -169,8 +167,8 @@ export async function showConfigMenu(ctx: ExtensionCommandContext, path: URL, si
       preview: `${row.name} · ${row.model} (${row.thinking})\n\nWhen to use: ${row.when_to_use}`,
     }));
     const status = config.enabled ? "Enabled" : "Disabled";
-    const switchItem = { value: "Router status", label: `Router status: ${status}`, preview: "Enable or disable routing without changing the rubric." };
-    const actions = ["Add route", "Classifier order", "Base model", "Routing model"].map((value) => ({ value, label: value }));
+    const switchItem = { value: "Router status", label: `Router status: ${status}`, preview: "Enable or disable parent delegation guidance and worker model routing without changing the rubric." };
+    const actions = ["Add route", "Classifier order", "Routing model"].map((value) => ({ value, label: value }));
     const debugItem = {
       value: "Debug decisions", label: `Debug decisions: ${config.debug ? "On" : "Off"}`,
       preview: "When on, routing decision entries store the full task text and Pi shows a notification for each decision. " +

@@ -10,7 +10,6 @@ export type RouterConfig = {
   enabled: boolean;
   /** Stores full task text in routing decision entries and notifies each decision. parseConfig keeps it only when true, so saving omits it otherwise. */
   debug?: boolean;
-  base_agent?: ModelChoice;
   routing_model?: ModelChoice;
   classifiers: string[];
   routes: Route[];
@@ -70,7 +69,6 @@ export function parseConfig(json: string): RouterConfig {
     ...(config.debug ? { debug: true as const } : {}),
     routes,
     classifiers: classifiers.map((id, i) => modelId(id, `classifiers[${i}]`)),
-    base_agent: config.base_agent === undefined ? undefined : choice(config.base_agent, "base_agent"),
     routing_model: config.routing_model === undefined ? undefined : choice(config.routing_model, "routing_model"),
   };
 }

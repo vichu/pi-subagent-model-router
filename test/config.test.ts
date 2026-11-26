@@ -25,9 +25,10 @@ test("keeps debug only when true so a saved router.json omits the default", () =
   expect(parseConfig(saved).debug).toBe(true);
 });
 
-test("reads explicit backend overrides and model settings", () => {
+test("reads backend overrides and ignores the legacy base model", () => {
   const model = { model: "provider/model", thinking: "low" };
-  expect(parse({ ...base, base_agent: model, routing_model: model, classifiers: [] })).toMatchObject({ base_agent: model, routing_model: model, classifiers: [] });
+  expect(parse({ ...base, base_agent: model, routing_model: model, classifiers: [] })).toMatchObject({ routing_model: model, classifiers: [] });
+  expect(parse({ ...base, base_agent: "stale value" })).not.toHaveProperty("base_agent");
 });
 
 test.each([

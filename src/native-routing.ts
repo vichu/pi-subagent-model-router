@@ -157,12 +157,16 @@ type DecisionTrace = {
 const skip = (reason: RoutingSkipReason, detail?: string): HookResult => ({ outcome: "skipped", reason, detail });
 const errorDiagnostic = (diagnostics: readonly { severity: string }[]) => diagnostics.some(({ severity }) => severity === "error");
 
+function expandNativeAgentDir(home: string, configuredDir: string | undefined) {
+  if (!configuredDir) return join(home, CONFIG_DIR_NAME, "agent");
+  if (configuredDir === "~") return home;
+  return /^~[\\/]/.test(configuredDir) ? join(home, configuredDir.slice(2)) : configuredDir;
+}
+
 export function registerNativeRouting(pi: ExtensionAPI, configFile: URL, session: AbortSignal) {
   const home = process.env.HOME || process.env.USERPROFILE || homedir();
   const configuredDir = process.env.PI_CODING_AGENT_DIR;
-  const nativeAgentDir = !configuredDir ? join(home, CONFIG_DIR_NAME, "agent") : configuredDir === "~" ? home :
-    /^~[\\/]/.test(configuredDir) ? join(home, configuredDir.slice(2)) : configuredDir;
-  const agentDirs = [...new Set([getAgentDir(), nativeAgentDir])];
+  const agentDirs = [...new Set([getAgentDir(), expandNativeAgentDir(home, configuredDir)])];
   const configuredPlacement = nativePlacementAtRegistration(agentDirs);
   let incompatibilityReported = false;
   let unrecognizedKeysReported = false;
@@ -171,9 +175,7 @@ export function registerNativeRouting(pi: ExtensionAPI, configFile: URL, session
   session.addEventListener("abort", () => routedCalls.clear(), { once: true });
 
   async function routeCall(event: ToolCallEvent, ctx: ExtensionContext, signal: AbortSignal, trace: DecisionTrace): Promise<HookResult> {
-    if (process.env.PI_SUBAGENT_CHILD === "1" || process.env.PI_SUBAGENT_PI_BINARY || process.env.PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT) {
-      return skip("child_runtime");
-    }
+    if (inChildRuntime()) return skip("child_runtime");
     trace.sessionKey = runSessionKey(ctx.sessionManager);
     if (configuredPlacement) return skip("native_placement_config");
     const input = event.input as Record<string, unknown>;
@@ -214,9 +216,8 @@ export function registerNativeRouting(pi: ExtensionAPI, configFile: URL, session
       setRouterStatus(ctx.ui, "incompatible");
       if (!incompatibilityReported) {
         incompatibilityReported = true;
-        ctx.ui.notify(`Native subagent routing is off: the loaded pi-subagents (${detected.version ? `version ${detected.version}` : "version unknown"}) ` +
-          "does not expose the integration this router expects. Subagent calls run unchanged with native model defaults. " +
-          "Update pi-subagent-model-router or report the incompatibility.", "warning");
+        const version = detected.version ? `version ${detected.version}` : "version unknown";
+        ctx.ui.notify(`Native subagent routing is off: the loaded pi-subagents (${version}) does not expose the integration this router expects. Subagent calls run unchanged with native model defaults. Update pi-subagent-model-router or report the incompatibility.`, "warning");
       }
       return skip("pi_subagents_incompatible");
     }
@@ -247,9 +248,10 @@ export function registerNativeRouting(pi: ExtensionAPI, configFile: URL, session
     const baseline = await resolveSubagentLaunchContract(lookup);
     if (!baseline.ok) return skip("baseline_contract", `preflight_failed:${baseline.code}`);
     const { contract } = baseline;
-    const baselineIssue = contract.model ? "explicit_model" : contract.thinkingCeiling ? "thinking_ceiling"
-      : contract.agent.shadowedCandidates.length ? "shadowed_agent" : errorDiagnostic(contract.diagnostics) ? "diagnostic_error" : undefined;
-    if (baselineIssue) return skip("baseline_contract", baselineIssue);
+    if (contract.model) return skip("baseline_contract", "explicit_model");
+    if (contract.thinkingCeiling) return skip("baseline_contract", "thinking_ceiling");
+    if (contract.agent.shadowedCandidates.length) return skip("baseline_contract", "shadowed_agent");
+    if (errorDiagnostic(contract.diagnostics)) return skip("baseline_contract", "diagnostic_error");
     trace.step = "agent_definition";
     const { frontmatter } = parseFrontmatter(readFileSync(contract.agent.filePath, "utf8"));
     const runner: unknown = frontmatter.runner;
@@ -258,21 +260,22 @@ export function registerNativeRouting(pi: ExtensionAPI, configFile: URL, session
     if (pinnedKey) return skip("agent_pins_model", pinnedKey);
 
     trace.step = "routing";
-    trace.routing = await determineRoute(config, task, registry, undefined, signal);
+    const current = ctx.model && { model: `${ctx.model.provider}/${ctx.model.id}`, thinking: pi.getThinkingLevel() };
+    trace.routing = await determineRoute(config, task, registry, current, signal);
     const { target, route, backend } = trace.routing;
     const { model, unavailable } = checkChatModel(registry, target.model);
     // A detached child may not share providers registered by parent extensions.
-    const unusable = !model ? unavailable : model.api === "pi-virtual" ? "pi_virtual"
-      : registry.getRegisteredProviderIds().includes(model.provider) ? "registered_provider"
-      : !getSupportedThinkingLevels(model).includes(target.thinking) ? "thinking_unsupported" : undefined;
-    if (unusable) return skip("worker_model_unusable", unusable);
+    if (!model) return skip("worker_model_unusable", unavailable);
+    if (model.api === "pi-virtual") return skip("worker_model_unusable", "pi_virtual");
+    if (registry.getRegisteredProviderIds().includes(model.provider)) return skip("worker_model_unusable", "registered_provider");
+    if (!getSupportedThinkingLevels(model).includes(target.thinking)) return skip("worker_model_unusable", "thinking_unsupported");
     const override = `${target.model}:${target.thinking}`;
     trace.step = "candidate_preflight";
     const candidate = await resolveSubagentLaunchContract({ ...lookup, model: override });
-    const mismatch = !candidate.ok ? `preflight_failed:${candidate.code}` : candidate.contract.model !== override ? "model"
-      : candidate.contract.agent.definitionDigest !== contract.agent.definitionDigest ? "agent_definition"
-      : errorDiagnostic(candidate.contract.diagnostics) ? "diagnostic_error" : undefined;
-    if (mismatch) return skip("candidate_contract_mismatch", mismatch);
+    if (!candidate.ok) return skip("candidate_contract_mismatch", `preflight_failed:${candidate.code}`);
+    if (candidate.contract.model !== override) return skip("candidate_contract_mismatch", "model");
+    if (candidate.contract.agent.definitionDigest !== contract.agent.definitionDigest) return skip("candidate_contract_mismatch", "agent_definition");
+    if (errorDiagnostic(candidate.contract.diagnostics)) return skip("candidate_contract_mismatch", "diagnostic_error");
     if (signal.aborted) return skip("aborted");
     const lateConflict = conflict();
     if (lateConflict) return lateConflict;
@@ -310,8 +313,73 @@ export function registerNativeRouting(pi: ExtensionAPI, configFile: URL, session
     return record;
   }
 
+  function inChildRuntime() {
+    return process.env.PI_SUBAGENT_CHILD === "1" ||
+      Boolean(process.env.PI_SUBAGENT_PI_BINARY || process.env.PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT);
+  }
+
+  let missingDelegationToolReported = false;
+  // One redirect per user turn; a worker launch or a retry leaves Codemode available.
+  let redirectFirstCodemode = false;
+  pi.on("agent_end", () => { redirectFirstCodemode = false; });
+  function delegationTool() {
+    const active = pi.getActiveTools();
+    if (active.includes("subagent")) return "subagent";
+    if (active.includes("subagents_enable")) return "subagents_enable";
+  }
+
+  pi.on("before_agent_start", async (event, ctx) => {
+    redirectFirstCodemode = false;
+    if (event.messageType !== "user" || inChildRuntime()) return;
+    const signal = AbortSignal.any([session, ...(ctx.signal ? [ctx.signal] : [])]);
+    try {
+      const config = parseConfig(await readFile(configFile, { encoding: "utf8", signal }));
+      signal.throwIfAborted();
+      if (!config.enabled) return;
+    } catch {
+      return; // Unreadable router settings must not prevent the parent turn.
+    }
+    if (!delegationTool()) {
+      if (ctx.hasUI && !missingDelegationToolReported) {
+        missingDelegationToolReported = true;
+        const loaded = pi.getAllTools().some(({ name }) => name === "subagent");
+        ctx.ui.notify(loaded
+          ? "Automatic delegation is off: enable the subagent tool in Pi's active tools."
+          : "Automatic delegation needs the pi-subagents extension. Run pi install npm:pi-subagents, then reload Pi.", "warning");
+      }
+      return;
+    }
+    redirectFirstCodemode = true;
+    const guidance = [
+      "## Subagent routing: parent role",
+      "When this router is enabled, start by delegating the actual work for fresh workspace tasks. That includes read-only repository investigation, even when the request is phrased as a question, as well as code changes, debugging, testing, and review.",
+      "Call subagent directly. If only subagents_enable is available, call it first, then delegate as soon as subagent is available. Do not try unavailable tools or call subagent through Codemode. Use Codemode to coordinate or verify results, not instead of delegation.",
+      "Use an advertised agent suited to the task; do not guess agent names. Give the worker a concrete deliverable, relevant context, scope, and acceptance checks. For implementation, ask an edit-capable worker to make the changes and run checks.",
+      "Leave model selection to the router unless the user specifies a worker model. Use foreground delegation (async: false) when you need the result before replying. Reconcile results, verify the outcome as needed, and summarize what was done and what remains.",
+      "For a recap, summary, or options based on work already completed, use the existing results instead of delegating again. Answer simple conversational questions directly. Respect explicit user limits on delegation and tool use. If delegation is unavailable or fails, report it accurately.",
+    ].join("\n");
+    return { systemPrompt: `${event.systemPrompt}\n\n${guidance}` };
+  });
+
   pi.on("tool_call", async (event, ctx) => {
-    if (event.toolName !== "subagent" || event.parentToolCallId) return; // not_subagent_tool, nested_call
+    if (event.parentToolCallId) return;
+    if (event.toolName === "codemode" && redirectFirstCodemode) {
+      redirectFirstCodemode = false;
+      const tool = delegationTool();
+      if (tool && !session.aborted && !ctx.signal?.aborted && !inChildRuntime()) {
+        const next = tool === "subagent"
+          ? "Delegate substantive work with a direct subagent call first."
+          : "Call subagents_enable first, then delegate substantive work with subagent.";
+        return {
+          block: true,
+          reason: `Codemode was not run. ${next} Retry Codemode only if the user disallows delegation or the operation cannot be delegated.`,
+        };
+      }
+    }
+    if (event.toolName !== "subagent") return;
+    const input = event.input as Record<string, unknown>;
+    if (typeof input.agent === "string" && input.agent.trim() && typeof input.task === "string" && input.task.trim() &&
+      input.action === undefined) redirectFirstCodemode = false;
     const startedAt = performance.now();
     const trace: DecisionTrace = { step: "params", debug: false };
     const signal = AbortSignal.any([session, ...(ctx.signal ? [ctx.signal] : [])]);

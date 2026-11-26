@@ -91,10 +91,10 @@ test("tries Decisions after an exception", async () => {
   expect(await run()).toMatchObject({ backend: "q/decisions", notes: [expect.stringContaining("failed or timed out")] });
 });
 
-test("abstention uses configured base and does not consult another provider", async () => {
+test("abstention uses the current session model and does not consult another provider", async () => {
   const { run, classify } = setup();
   classify.mockResolvedValue(classifierResult(0.69));
-  expect(await run({ ...config, base_agent: writer })).toMatchObject({ route: null, backend: "p/jev", target: writer });
+  expect(await run()).toMatchObject({ route: null, backend: "p/jev", target: base });
   expect(classify).toHaveBeenCalledTimes(1);
 });
 
@@ -102,7 +102,7 @@ test.each([true, false])("falls back if selected worker is unavailable (known: %
   const { run, find, hasConfiguredAuth } = setup();
   if (known) hasConfiguredAuth.mockReturnValue(false);
   else find.mockReturnValueOnce(undefined as never);
-  expect(await run()).toMatchObject({ route: null, target: base, notes: [expect.stringContaining("worker model"), expect.stringContaining("Falling back to the base")] });
+  expect(await run()).toMatchObject({ route: null, target: base, notes: [expect.stringContaining("worker model"), expect.stringContaining("Falling back to the current session")] });
 });
 
 test.each(["off", "low"] as const)("runs an explicitly configured routing chat model (%s)", async (thinking) => {
@@ -116,7 +116,7 @@ test.each([
 ])("falls back on a chat response with status %s and text %s", async (stopReason, text, note) => {
   const { run, result } = setup();
   result.mockResolvedValue({ stopReason, content: [{ type: "text", text }] });
-  expect(await run({ ...config, classifiers: [], routing_model: base })).toMatchObject({ route: null, target: base, notes: [expect.stringContaining(note), expect.stringContaining("Falling back to the base")] });
+  expect(await run({ ...config, classifiers: [], routing_model: base })).toMatchObject({ route: null, target: base, notes: [expect.stringContaining(note), expect.stringContaining("Falling back to the current session")] });
 });
 
 test("falls back when routing-model credentials are not configured", async () => {
