@@ -7,18 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-26
+
 ### Added
 
-- Show up to three Jev route probabilities per native classifier attempt in Routing decisions and redacted diagnostics, including when routing falls back. Probabilities do not affect model selection.
+- Show up to three Jev route probabilities per native classifier attempt in Routing decisions and redacted diagnostics, including when routing falls back. Probabilities do not affect model selection. ([#23](https://github.com/vichu/pi-subagent-model-router/pull/23))
 
 ### Changed
 
-- The default `simple_cli_operations` rubric now explicitly covers verifying and publishing an already-prepared patch (checks, commit, push, and pull request).
+- The default `simple_cli_operations` rubric now explicitly covers verifying and publishing an already-prepared patch (checks, commit, push, and pull request). ([#23](https://github.com/vichu/pi-subagent-model-router/pull/23))
+- The README uses a static native routing diagram so it also renders on npm. ([#22](https://github.com/vichu/pi-subagent-model-router/pull/22))
+- Development and integration tests use Pi coding agent 1.6.0. ([#11](https://github.com/vichu/pi-subagent-model-router/pull/11))
+- CI and release workflows use `actions/checkout` 7.0.1 and `actions/setup-node` 7.1.0. ([#8](https://github.com/vichu/pi-subagent-model-router/pull/8), [#9](https://github.com/vichu/pi-subagent-model-router/pull/9))
 
 ### Fixed
 
-- Route native subagent calls that explicitly name the current session working directory. Without a rubric match, eligible calls use the active parent's model and thinking rather than the worker's native thinking default. Alternate working directories and explicit model pins remain unchanged.
-- When a routing decision did not record a `pi-subagents` version, say so without implying that the extension was not loaded.
+- Route native subagent calls that explicitly name the current session working directory. Without a rubric match, eligible calls use the active parent's model and thinking rather than the worker's native thinking default. Alternate working directories and explicit model pins remain unchanged. ([#23](https://github.com/vichu/pi-subagent-model-router/pull/23))
+- When a routing decision did not record a `pi-subagents` version, say so without implying that the extension was not loaded. ([#23](https://github.com/vichu/pi-subagent-model-router/pull/23))
 
 ## [0.5.1] - 2026-11-26
 
@@ -112,7 +117,8 @@ Initial npm release, published manually from commit `e0bca90` before releases we
 - `/subagent-router` workspace with **Run a brief**, **Rubric and settings** (model and thinking dropdowns), **Session history** and **Router status**. The footer shows `Router: enabled` or `Router: disabled`.
 - A default routing matrix with coding complexity tiers and routes for CLI work, architecture and LaTeX.
 
-[Unreleased]: https://github.com/vichu/pi-subagent-model-router/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/vichu/pi-subagent-model-router/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/vichu/pi-subagent-model-router/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/vichu/pi-subagent-model-router/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/vichu/pi-subagent-model-router/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/vichu/pi-subagent-model-router/compare/v0.3.0...v0.4.0
