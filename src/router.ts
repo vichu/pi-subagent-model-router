@@ -174,9 +174,9 @@ export async function determineRoute(
   const state: RoutingState = { task, routes: criteria };
   const routeNames = config.routes.map((route) => route.name);
   const fallback = (backend: string | null): RoutingDecision => {
-    const target = config.base_agent ?? current;
-    if (!target) throw new Error([...notes, "No base model available. Select a signed-in chat model with /model or set base_agent in Rubric and settings."].join("\n"));
-    notes.push("Falling back to the base model and thinking. To enable classification, configure a supported classifier or explicitly set routing_model in Rubric and settings.");
+    const target = current;
+    if (!target) throw new Error([...notes, "No base model available. Select a signed-in chat model with /model."].join("\n"));
+    notes.push("Falling back to the current session model and thinking.");
     return { target, route: null, backend, notes, attempts };
   };
   // A route answer is only recorded by name once it matches the rubric; other text may be raw model output.

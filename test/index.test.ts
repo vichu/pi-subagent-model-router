@@ -109,7 +109,7 @@ test("initializes the footer from config on session start", async () => {
 
 test("registers a native tool hook without installing a replacement tool or changing the parent", () => {
   const { on, registerTool, setModel, setThinkingLevel, setActiveTools } = setup();
-  expect(on.mock.calls.map(([event]) => event)).toEqual(["tool_call", "tool_execution_end", "session_shutdown", "session_start"]);
+  expect(on.mock.calls.map(([event]) => event)).toEqual(["agent_end", "before_agent_start", "tool_call", "tool_execution_end", "session_shutdown", "session_start"]);
   for (const fn of [registerTool, setModel, setThinkingLevel, setActiveTools]) expect(fn).not.toHaveBeenCalled();
 });
 
@@ -439,28 +439,27 @@ test("does not echo raw worker errors into the UI", async () => {
   expect(notify.mock.calls[0][0]).not.toContain("provider-body-secret");
 });
 
-test("checks configured fallback authentication instead of silently switching providers", async () => {
+test("checks session model authentication instead of silently switching providers", async () => {
   const { bus, notify, run, getAvailableOfType } = setup();
   getAvailableOfType.mockResolvedValue([]);
   const request = vi.fn();
   bus.on(requestEvent, request);
-  vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes, base_agent: { model: "demo/base", thinking: "low" } }));
   await run(args, { provider: "other", id: "current" } as ExtensionCommandContext["model"], { hasConfiguredAuth: () => false });
   expect(notify).toHaveBeenCalledWith(expect.stringContaining("TYPESAFE_API_KEY"), "warning");
   expect(notify).toHaveBeenCalledWith(expect.stringContaining("ChatGPT sign-in"), "warning");
-  expect(notify).toHaveBeenCalledWith(expect.stringContaining("base fallback: Chat model demo/base has no configured authentication"), "error");
+  expect(notify).toHaveBeenCalledWith(expect.stringContaining("base fallback: Chat model other/current has no configured authentication"), "error");
   expect(request).not.toHaveBeenCalled();
 });
 
-test("keeps the configured fallback when Jev and Decisions credentials are unavailable", async () => {
+test("falls back to the session model when classifiers are unavailable, ignoring legacy config", async () => {
   const { bus, notify, run, getAvailableOfType, classify } = setup();
   getAvailableOfType.mockResolvedValue([]);
   const request = vi.fn((req) => bus.emit(responseEvent, { ...req, status: "completed", result: { kind: "text", text: "fallback answer" } }));
   bus.on(requestEvent, request);
   vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes, base_agent: { model: "demo/base", thinking: "low" } }));
-  await run();
+  await run(args, { provider: "demo", id: "current" } as ExtensionCommandContext["model"]);
   expect(classify).not.toHaveBeenCalled();
-  expect(request).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ agent: "router-spike-worker", model: "demo/base", thinking: "low" }));
+  expect(request).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ agent: "router-spike-worker", model: "demo/current", thinking: "off" }));
   expect(notify).toHaveBeenCalledWith(expect.stringContaining("fallback answer"), "info");
 });
 

@@ -198,8 +198,8 @@ function countsHint(decisions: readonly DecisionRecord[]) {
 function configSummary(raw: string) {
   const digest = sha256(raw);
   try {
-    const { enabled, debug, classifiers, base_agent, routing_model, routes } = parseConfig(raw);
-    return { sha256: digest, enabled, debug: debug === true, classifiers, base_agent, routing_model,
+    const { enabled, debug, classifiers, routing_model, routes } = parseConfig(raw);
+    return { sha256: digest, enabled, debug: debug === true, classifiers, routing_model,
       routes: routes.map(({ name, model, thinking }) => ({ name, model, thinking })) };
   } catch {
     return { sha256: digest, error: "invalid" };

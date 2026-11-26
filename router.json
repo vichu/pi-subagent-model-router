@@ -103,9 +103,5 @@
   "classifiers": [
     "typesafe/jev-latest",
     "openai/gpt-6-luna"
-  ],
-  "base_agent": {
-    "model": "openai-codex/gpt-6.2-sol",
-    "thinking": "medium"
-  }
+  ]
 }

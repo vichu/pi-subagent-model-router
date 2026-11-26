@@ -211,7 +211,7 @@ test("Copy diagnostics shows a redacted bundle and returns to the list", async (
     generatedAt: expect.stringMatching(/Z$/),
     versions: { router: expect.any(String), piSubagents: "0.89.1", piCodingAgent: VERSION },
     config: {
-      sha256: createHash("sha256").update(raw).digest("hex"), enabled: true, debug: false, classifiers: config.classifiers, base_agent: config.base_agent,
+      sha256: createHash("sha256").update(raw).digest("hex"), enabled: true, debug: false, classifiers: config.classifiers,
       routes: [{ name: "code_review", model: "openai-codex/gpt-6-luna", thinking: "high" }],
     },
     decisions: expect.any(Array),

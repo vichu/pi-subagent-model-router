@@ -76,11 +76,16 @@ test("adds and removes a route after confirmation", async () => {
   expect((await stored()).routes.map(({ name }: typeof row) => name)).toEqual(["review", "docs"]);
 });
 
-test("sets a routing model and clears the configured base model", async () => {
+test("sets a routing model and drops the legacy base setting on save", async () => {
   await setup(["Routing model", "Set model and thinking", "demo/routing", "medium"]).run();
   expect((await stored()).routing_model).toEqual({ model: "demo/routing", thinking: "medium" });
-  await setup(["Base model", "Clear setting"]).run();
   expect((await stored()).base_agent).toBeUndefined();
+  await setup(["Routing model"]).run();
+  expect((await stored()).routing_model).toEqual({ model: "demo/routing", thinking: "medium" });
+  await setup(["Routing model", "Set model and thinking", "demo/routing", "high"]).run();
+  expect((await stored()).routing_model).toEqual({ model: "demo/routing", thinking: "high" });
+  await setup(["Routing model", "Clear setting"]).run();
+  expect(await stored()).not.toHaveProperty("routing_model");
 });
 
 test("selects an available model without opening a text editor", async () => {
@@ -133,7 +138,7 @@ test("toggles debug decisions and writes debug only while it is on", async () =>
   const disable = setup(["Debug decisions", "Off"]);
   await disable.run();
   expect(await stored()).not.toHaveProperty("debug");
-  expect(await stored()).toMatchObject({ routes: base.routes, base_agent: base.base_agent });
+  expect(await stored()).toMatchObject({ routes: base.routes });
 });
 
 test("shows the debug state and its privacy effect in the rubric", async () => {
