@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-11-26
+
+### Changed
+
+- Upgrade TypeScript from 5.9.3 to 7.0.2, @types/node from 22.20.5 to 26.6.6, and Vitest and @vitest/coverage-v8 from 4.1.9 to 5.1.1.
+
 ## [0.5.2] - 2026-11-26
 
 ### Added
