@@ -2,23 +2,7 @@
 
 The router guides Pi to delegate fresh workspace work on ordinary prompts, including read-only repo investigation. It can guide Pi through `subagents_enable` if the direct tool isn't active yet. Pi still decides whether to delegate and which agent to use. For eligible native `subagent` calls, the router selects the **child's** model and thinking from `router.json` or falls back to the current Pi session model and thinking. It never changes the parent model or replaces the native tool or agent catalog.
 
-```mermaid
-flowchart TD
-    accTitle: Native subagent model routing
-    accDescr: Pi decides whether to delegate and picks a persona from the native catalog. The router checks a direct subagent call before execution. It adds a model and thinking override only for a supported, conflict-free call. Otherwise pi-subagents receives the original arguments.
-
-    prompt["Your prompt"] --> parent["Pi parent plans the work"];
-    parent -->|"No delegation"| answer["Pi parent responds"];
-    parent -->|"Picks an agent from the native catalog"| agent_call["Native subagent call"];
-    agent_call --> check["Can the router safely add an override?"];
-    check -->|"Supported and conflict-free"| classify["Match the child brief to the routing rubric<br/>or fall back to the session model"];
-    classify -->|"Valid candidate"| override["Add model: provider/id:thinking"];
-    classify -->|"No valid candidate"| native["pi-subagents runs with native arguments"];
-    check -->|"Explicit, unsupported, or uncertain"| native;
-    override --> routed["pi-subagents runs with the model override"];
-    native --> answer;
-    routed --> answer;
-```
+![Native subagent routing: Pi decides whether to delegate and which agent to use. For eligible calls, the router adds a child model and thinking override if it finds a valid rubric match or session fallback; otherwise the subagent runs with its original arguments. The Pi parent responds either way.](https://raw.githubusercontent.com/vichu/pi-subagent-model-router/main/docs/native-subagent-routing.png)
 
 ## How it differs from other routing approaches
 
