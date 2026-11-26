@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-26
+
+### Fixed
+
+- Ordinary workspace requests now get delegation guidance whether the native `subagent` tool is active or must first be enabled with `subagents_enable`. The parent can reuse a completed worker result for recap-only follow-ups. ([#20](https://github.com/vichu/pi-subagent-model-router/pull/20))
+- Eligible worker calls that have no usable route fall back to the active Pi session's model and thinking level. The old `base_agent` setting is ignored and removed when saving the rubric. The parent model and native launch constraints are unchanged. ([#20](https://github.com/vichu/pi-subagent-model-router/pull/20))
+
+### Changed
+
+- The first Codemode call that precedes delegation is redirected once when native delegation is available. Codemode remains available for verification and retries. ([#20](https://github.com/vichu/pi-subagent-model-router/pull/20))
+
 ## [0.5.0] - 2026-11-25
 
 ### Added
@@ -88,7 +99,8 @@ Initial npm release, published manually from commit `e0bca90` before releases we
 - `/subagent-router` workspace with **Run a brief**, **Rubric and settings** (model and thinking dropdowns), **Session history** and **Router status**. The footer shows `Router: enabled` or `Router: disabled`.
 - A default routing matrix with coding complexity tiers and routes for CLI work, architecture and LaTeX.
 
-[Unreleased]: https://github.com/vichu/pi-subagent-model-router/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/vichu/pi-subagent-model-router/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/vichu/pi-subagent-model-router/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/vichu/pi-subagent-model-router/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/vichu/pi-subagent-model-router/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/vichu/pi-subagent-model-router/compare/v0.2.0...v0.3.0
