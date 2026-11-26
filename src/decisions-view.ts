@@ -39,7 +39,7 @@ const skipReasons: Record<RecordedSkipReason, { why: string; fix: string }> = {
   },
   deliberate_params: {
     why: "The call set {detail} explicitly, so routing was skipped by design.",
-    fix: "None needed; only plain agent, task, async, and label calls are routed.",
+    fix: "For routing, use a plain launch and omit `cwd` unless it resolves to the session working directory.",
   },
   aborted: {
     why: "The call or session was cancelled before routing finished.",
@@ -112,8 +112,12 @@ function explanation({ outcome, reason, detail }: DecisionRecord) {
 }
 
 const attemptColumns = "backend · kind · result · fit · route · ms · error";
-const attemptRow = ({ backend, kind, result, fit, route, ms, error }: Attempt) =>
-  [backend, kind, result, fit === undefined ? "—" : fit.toFixed(2), route ?? "—", `${ms} ms`, error ?? "—"].join(" · ");
+function attemptLines({ backend, kind, result, fit, route, ms, error, topRouteProbabilities }: Attempt) {
+  return [
+    [backend, kind, result, fit === undefined ? "—" : fit.toFixed(2), route ?? "—", `${ms} ms`, error ?? "—"].join(" · "),
+    ...(topRouteProbabilities ? [`Jev route probabilities: ${topRouteProbabilities.map(({ route, probability }) => `${route} ${probability}`).join(" · ")}`] : []),
+  ];
+}
 
 function receiptText({ status, runId, model, thinking, usage }: RunReceipt) {
   const reported = reportedRunUsage(usage);
@@ -142,7 +146,7 @@ function summaryLines(decision: DecisionRecord) {
     why: why ? [`Why: ${why.why}`, `Fix: ${why.fix}`] : [],
     trailer: [
       `${finalModel(decision)} · route ${routeText} · backend ${backend ?? "none"}`,
-      `Versions: router ${versions.router ?? "unknown"} · pi-subagents ${versions.piSubagents ?? "not detected"}`,
+      `Versions: router ${versions.router ?? "unknown"} · pi-subagents ${versions.piSubagents ?? "(version not recorded)"}`,
       `Tool call: ${toolCallId} · request ${requestId ?? "none"} · ${durationMs} ms`,
     ],
   };
@@ -164,7 +168,7 @@ function decisionRow(decision: DecisionRecord, receipts: RunReceipt[], index: nu
     ...summary.why,
     `Task: ${taskLine}`,
     `Classification: ${attempts.length ? attemptColumns : "not reached"}`,
-    ...attempts.map((attempt) => `  ${attemptRow(attempt)}`),
+    ...attempts.flatMap((attempt) => attemptLines(attempt).map((line) => `  ${line}`)),
     ...summary.trailer,
     ...(receipts.length ? receipts.map((receipt) => `Receipt: ${receiptText(receipt)}`) : ["Receipts: none"]),
   ].join("\n");
@@ -172,7 +176,7 @@ function decisionRow(decision: DecisionRecord, receipts: RunReceipt[], index: nu
     taskItem(task),
     ...attempts.map((attempt, i) => ({
       value: `attempt:${i}`, label: `Attempt ${i + 1} · ${attempt.result}`, description: `${attempt.backend} (${attempt.kind})`,
-      preview: `${attemptColumns}\n${attemptRow(attempt)}`,
+      preview: [attemptColumns, ...attemptLines(attempt)].join("\n"),
     })),
     ...receipts.map((receipt, i) => ({
       value: `receipt:${i}`, label: `Receipt · ${receipt.status}`, description: receipt.runId ?? "unconfirmed run",

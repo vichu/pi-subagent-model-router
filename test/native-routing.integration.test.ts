@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,20 +22,23 @@ function hasInstruction(messages: { role: string; content: unknown }[], instruct
 test.each([
   { name: "default background", input: {}, worker: "worker", expected: "routed", effort: "low" },
   { name: "foreground", input: { async: false }, worker: "scout", expected: "routed", effort: "low" },
-  { name: "labeled foreground", input: { async: false, label: "Offline check" }, worker: "scout", expected: "routed", effort: "low" },
+  { name: "labeled foreground with session cwd", input: { async: false, label: "Offline check" }, worker: "worker", expected: "routed", effort: "low", requestedCwd: "workspace" },
   { name: "project persona", input: { async: false }, worker: "local-reader", expected: "routed", effort: "low" },
-  { name: "explicit model", input: { async: false, model: "stub/explicit:high" }, worker: "worker", expected: "explicit", effort: "high" },
+  { name: "explicit model with session cwd", input: { async: false, model: "stub/explicit:high" }, worker: "worker", expected: "explicit", effort: "high", requestedCwd: "workspace" },
   { name: "enforced scope", input: { async: false }, worker: "worker", expected: "parent", settings: { modelScope: { enforce: true, allow: ["inherit"] } } },
   { name: "provider-scoped pin", input: { async: false }, worker: "worker", expected: "explicit", settings: { agentOverridesByProvider: { stub: { worker: { model: "stub/explicit:high" } } } }, effort: "high" },
   { name: "separately installed same-version native bundle", input: { async: false }, worker: "worker", expected: "routed", effort: "low", separateCopy: true },
   { name: "only the executing copy pins the built-in worker", input: { async: false }, worker: "worker", expected: "explicit", effort: "high", separateCopy: true, builtInPin: true },
-  { name: "no match falls back to the session model", input: { async: false }, worker: "delegate", expected: "parent", classifierAnswer: "no_match" },
+  { name: "no match falls back to the session model and medium thinking", input: { async: false, label: "Offline fallback" }, worker: "worker", expected: "parent", effort: "medium", parentThinking: "medium", classifierAnswer: "no_match", requestedCwd: "workspace" },
+  { name: "another cwd keeps native worker defaults", input: { async: false }, worker: "worker", expected: "parent", effort: "high", parentThinking: "medium", requestedCwd: "other" },
   { name: "parent tries Codemode before delegating", input: { async: false }, worker: "scout", expected: "routed", effort: "low", codemodeFirst: true },
   { name: "ordinary request activates and routes; recap reuses the worker result", input: { async: false }, worker: "scout", expected: "routed", effort: "low", dynamic: true },
-])("Pi executes the native subagent tool with expected args: $name", async ({ input, worker, expected, effort, settings, separateCopy, builtInPin, classifierAnswer, codemodeFirst, dynamic }) => {
-  const dir = await mkdtemp(join(tmpdir(), "pi-router-native-"));
+])("Pi executes the native subagent tool with expected args: $name", async ({ input, worker, expected, effort, settings, separateCopy, builtInPin, classifierAnswer, codemodeFirst, dynamic, requestedCwd, parentThinking = "off" }) => {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), "pi-router-native-")));
   const agentDir = join(dir, "agent");
   const project = join(dir, "project");
+  const otherProject = join(dir, "other-project");
+  const cwd = requestedCwd === "workspace" ? project : requestedCwd === "other" ? otherProject : undefined;
   const sessionDir = join(dir, "sessions");
   const prompt = dynamic
     ? "Find one way to simplify the test suite without reducing coverage. Don't edit anything."
@@ -64,7 +67,7 @@ test.each([
     } : first && codemodeFirst ? {
       id: "codemode-call", function: { name: "codemode", arguments: JSON.stringify({ code: "return 42;" }) },
     } : !nativeCallSent && (first || redirectReceived || enabledReceived) ? {
-      id: "native-call", function: { name: "subagent", arguments: JSON.stringify({ agent: worker, task: brief, ...input }) },
+      id: "native-call", function: { name: "subagent", arguments: JSON.stringify({ agent: worker, task: brief, cwd, ...input }) },
     } : undefined;
     if (call?.id === "native-call") nativeCallSent = true;
 
@@ -91,6 +94,7 @@ test.each([
     await mkdir(nativeConfigDir, { recursive: true });
     await writeFile(join(nativeConfigDir, "config.json"), JSON.stringify({ toolActivation: dynamic ? "dynamic" : "eager" }));
     await mkdir(project);
+    if (requestedCwd === "other") await mkdir(otherProject);
     await mkdir(sessionDir);
     await cp(join(root, "src"), join(dir, "src"), { recursive: true });
     await symlink(join(root, "node_modules"), join(dir, "node_modules"), "junction");
@@ -140,7 +144,7 @@ test.each([
       `);
     }
     const execution = run(process.execPath, [cli, "--offline", "--approve", "--mode", "json", "--provider", "stub", "--model", "parent",
-      "--thinking", "off", "--no-extensions", "--session-dir", sessionDir, "-e", native, "-e", join(dir, "src/index.ts"),
+      "--thinking", parentThinking, "--no-extensions", "--session-dir", sessionDir, "-e", native, "-e", join(dir, "src/index.ts"),
       ...(codemodeFirst ? ["-e", codemodeExtension] : []), prompt, ...(dynamic ? [recap] : [])], {
       cwd: project, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, HOME: dir, USERPROFILE: dir, TMPDIR: dir, TEMP: dir, TMP: dir, PI_CODING_AGENT_DIR: agentDir },
       timeout: 20_000, maxBuffer: 2 * 1024 * 1024,
@@ -159,17 +163,19 @@ test.each([
       expect(events.filter((entry) => entry.type === "tool_execution_end" && entry.toolName === "subagents_enable"))
         .toEqual([expect.objectContaining({ isError: false })]);
       expect(stdout).toContain("offline recap of the worker result");
-
+    }
+    const decision = classifierAnswer
+      ? { outcome: "fallback", route: null, backend: "stub/classifier", model: "stub/parent", thinking: "medium" }
+      : dynamic ? { outcome: "routed", route: "test", backend: "stub/classifier", model: "stub/routed", thinking: "low" }
+      : requestedCwd === "other" ? { outcome: "skipped", reason: "deliberate_params", detail: "cwd", attempts: [] }
+      : undefined;
+    if (decision) {
       const [parentLog, ...extraLogs] = (await readdir(sessionDir)).filter((name) => name.endsWith(".jsonl"));
       expect(parentLog).toBeDefined();
       expect(extraLogs).toEqual([]);
       const entries = (await readFile(join(sessionDir, parentLog), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
       expect(entries.filter((entry) => entry.type === "custom" && entry.customType === decisionEntryType)).toEqual([
-        expect.objectContaining({
-          data: expect.objectContaining({
-            agent: "scout", outcome: "routed", route: "test", backend: "stub/classifier", model: "stub/routed", thinking: "low",
-          }),
-        }),
+        expect.objectContaining({ data: expect.objectContaining({ agent: worker, ...decision }) }),
       ]);
     }
     if (codemodeFirst) {
@@ -184,7 +190,8 @@ test.each([
     if (classifications.length) expect(JSON.stringify(classifications[0].messages)).toContain(brief);
     const parent = requests.filter((request) => request.model !== "classifier" && !child.includes(request));
     expect(parent.length).toBeGreaterThanOrEqual(2);
-    expect(parent.every(({ model, reasoning_effort }) => model === "parent" && reasoning_effort === undefined)).toBe(true);
+    const parentEffort = parentThinking === "off" ? undefined : parentThinking;
+    expect(parent.every(({ model, reasoning_effort }) => model === "parent" && reasoning_effort === parentEffort)).toBe(true);
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));

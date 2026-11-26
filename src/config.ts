@@ -3,6 +3,7 @@ import type { SubagentDelegationThinking as Thinking } from "pi-subagents/delega
 export const routerCommand = "subagent-router";
 
 export const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly Thinking[];
+export const routeNamePattern = /^[a-z][a-z0-9_]{0,63}$/;
 
 export type ModelChoice = { model: string; thinking: Thinking };
 export type Route = ModelChoice & { name: string; label: string; when_to_use: string };
@@ -58,7 +59,7 @@ export function parseConfig(json: string): RouterConfig {
     const field = `routes[${i}]`;
     const row = object(value, field);
     const name = text(row.name, `${field}.name`);
-    if (!/^[a-z][a-z0-9_]{0,63}$/.test(name) || names.has(name)) throw new Error(`${field}.name must be unique lowercase snake_case`);
+    if (!routeNamePattern.test(name) || names.has(name)) throw new Error(`${field}.name must be unique lowercase snake_case`);
     names.add(name);
     return { ...choice(row, field), name, label: text(row.label, `${field}.label`), when_to_use: text(row.when_to_use, `${field}.when_to_use`) };
   });

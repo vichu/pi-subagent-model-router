@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Show up to three Jev route probabilities per native classifier attempt in Routing decisions and redacted diagnostics, including when routing falls back. Probabilities do not affect model selection.
+
+### Changed
+
+- The default `simple_cli_operations` rubric now explicitly covers verifying and publishing an already-prepared patch (checks, commit, push, and pull request).
+
+### Fixed
+
+- Route native subagent calls that explicitly name the current session working directory. Without a rubric match, eligible calls use the active parent's model and thinking rather than the worker's native thinking default. Alternate working directories and explicit model pins remain unchanged.
+- When a routing decision did not record a `pi-subagents` version, say so without implying that the extension was not loaded.
+
 ## [0.5.1] - 2026-11-26
 
 ### Fixed

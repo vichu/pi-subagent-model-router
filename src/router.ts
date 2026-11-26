@@ -1,8 +1,12 @@
+import type { ClassifierAnswer } from "@earendil-works/pi-ai";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { type ModelChoice, type RouterConfig, splitModel } from "./config.ts";
 
 type Registry = ExtensionCommandContext["modelRegistry"];
 type Questions = Parameters<Registry["classify"]>[1]["questions"];
+type Classifier = Parameters<Registry["classify"]>[0];
+
+export type RouteProbability = { route: string; probability: number };
 
 /** One consulted routing backend. `error` is a fixed kind, never provider output or credentials. */
 export type Attempt = {
@@ -11,6 +15,8 @@ export type Attempt = {
   result: "route" | "abstain" | "invalid" | "unavailable" | "failed";
   fit?: number;
   route?: string;
+  /** Up to three Jev Choice probabilities for rubric routes, highest first; never used for selection. */
+  topRouteProbabilities?: RouteProbability[];
   ms: number;
   error?: string;
 };
@@ -25,6 +31,22 @@ export type RoutingDecision = {
 
 const minimumFit = 0.7;
 const backendTimeoutMs = 10_000;
+export const topRouteProbabilityLimit = 3;
+export const isProbability = (value: unknown): value is number => typeof value === "number" && value >= 0 && value <= 1;
+
+function jevRouteProbabilities(model: Classifier, choice: ClassifierAnswer | undefined, routeNames: string[]) {
+  // Pi serves Jev directly and through gateways; the System One APIs also serve non-Jev models.
+  if ((model.api !== "typesafe-system-one" && model.api !== "cloudflare-workers-ai-system-one") ||
+      !/^(?:~?typesafe(?:-ai)?\/)?jev(?:-|$)/.test(model.id) || choice?.type !== "choice") return undefined;
+  const probabilities: unknown = choice.probabilities;
+  if (typeof probabilities !== "object" || probabilities === null || Array.isArray(probabilities)) return undefined;
+  const byRoute = probabilities as Record<string, unknown>;
+  const top = routeNames.flatMap((route): RouteProbability[] => {
+    const probability = Object.hasOwn(byRoute, route) ? byRoute[route] : undefined;
+    return isProbability(probability) ? [{ route, probability }] : [];
+  }).sort((a, b) => b.probability - a.probability).slice(0, topRouteProbabilityLimit);
+  return top.length ? top : undefined;
+}
 
 type UnavailableKind = "provider_not_loaded" | "model_not_in_catalog" | "no_auth";
 
@@ -54,7 +76,7 @@ function classifierUnavailable(registry: Registry, backend: string): { note: str
 
 type RoutingState = { task: string; routes: Record<string, string> };
 
-type AttemptDetail = Partial<Pick<Attempt, "fit" | "error">>;
+type AttemptDetail = Pick<Attempt, "fit" | "error" | "topRouteProbabilities">;
 type RecordAttempt = (result: Attempt["result"], detail?: AttemptDetail) => Attempt;
 
 function attemptRecorder(attempts: Attempt[], backend: string, kind: Attempt["kind"]): RecordAttempt {
@@ -94,22 +116,23 @@ async function tryClassifier(
       record("failed", { error: "incomplete" });
       return { kind: "next" };
     }
-    const fit = result.answers.fits;
-    if (fit?.type !== "bool" || !Number.isFinite(fit.probability) || fit.probability < 0 || fit.probability > 1) {
+    const { fits: fit, route: choice } = result.answers;
+    const topRouteProbabilities = questions.route ? jevRouteProbabilities(classifier, choice, routeNames) : undefined;
+    const telemetry = topRouteProbabilities ? { topRouteProbabilities } : {};
+    if (fit?.type !== "bool" || !isProbability(fit.probability)) {
       notes.push(`${backend}: invalid fit response.`);
-      record("invalid", { error: "invalid_fit" });
+      record("invalid", { ...telemetry, error: "invalid_fit" });
       return { kind: "next" };
     }
     if (fit.probability < minimumFit) {
       notes.push(`${backend}: no clear rubric match.`);
-      record("abstain", { fit: fit.probability });
+      record("abstain", { ...telemetry, fit: fit.probability });
       return { kind: "abstain", backend };
     }
-    const choice = result.answers.route;
     let name = "";
     if (routeNames.length === 1) name = routeNames[0];
     else if (choice?.type === "choice") name = choice.choice;
-    return { kind: "route", name, backend, attempt: record("route", { fit: fit.probability }) };
+    return { kind: "route", name, backend, attempt: record("route", { ...telemetry, fit: fit.probability }) };
   } catch {
     signal.throwIfAborted();
     notes.push(`${backend}: classifier request failed or timed out.`);
@@ -155,11 +178,11 @@ async function tryRoutingModel(
   }
 }
 
+// The caller can keep the attempt trace even when routing throws before choosing a target.
 export async function determineRoute(
-  config: RouterConfig, task: string, registry: Registry, current: ModelChoice | undefined, signal: AbortSignal,
+  config: RouterConfig, task: string, registry: Registry, current: ModelChoice | undefined, signal: AbortSignal, attempts: Attempt[] = [],
 ): Promise<RoutingDecision> {
   const notes: string[] = [];
-  const attempts: Attempt[] = [];
   const criteria = Object.fromEntries(config.routes.map(({ name, label, when_to_use }) => [name, `${label}: ${when_to_use}`]));
   const questions: Questions = {
     fits: {

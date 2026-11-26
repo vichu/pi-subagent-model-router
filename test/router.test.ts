@@ -79,6 +79,85 @@ test("uses Pi's native Decisions catalog, auth filtering, and classifier executi
   }
 });
 
+test.each([0.69, 0.9])("records the top three probabilities through Pi's TypeSafe response adapter with fit %s", async (fit) => {
+  const credentials = new InMemoryCredentialStore();
+  const registry = new ModelRegistry(await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false }));
+  const backend = "typesafe/jev-latest";
+  const routes = [{ ...writer, model: "openai/gpt-6-luna" }, analyst, { ...writer, name: "tester" }, { ...writer, name: "reviewer" }];
+  const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => Response.json({
+    answers: {
+      fits: { type: "noul", noul: fit },
+      route: { type: "choice", choice: "writer", confidence: 0.8, probabilities: { reviewer: 0.01, tester: 0.2, analyst: 0.1, writer: 0.69 } },
+    },
+  }));
+  vi.stubGlobal("fetch", fetch);
+  vi.stubEnv("TYPESAFE_API_KEY", "fixture-api-key");
+  vi.spyOn(registry, "hasConfiguredAuth").mockReturnValue(true);
+  try {
+    const decision = await determineRoute({ ...config, routes, classifiers: [backend] }, "Draft a note", registry, base, new AbortController().signal);
+    const routed = fit >= 0.7;
+    expect(decision).toMatchObject({ route: routed ? "writer" : null, backend, attempts: [
+      attempt(backend, "classifier", routed ? "route" : "abstain", { fit, topRouteProbabilities: [
+        { route: "writer", probability: 0.69 }, { route: "tester", probability: 0.2 }, { route: "analyst", probability: 0.1 },
+      ] }),
+    ] });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(String(fetch.mock.calls[0][0])).toBe("https://api.typesafe.ai/v1/systemone");
+  } finally {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  }
+});
+
+const jevBackend = "openrouter/typesafe/jev-1.14";
+const jev = { id: "typesafe/jev-1.14", api: "typesafe-system-one" };
+
+test("Jev telemetry uses only configured route names and valid numbers and cannot override the selected choice", async () => {
+  const { run, classify, getAvailableOfType } = setup();
+  getAvailableOfType.mockResolvedValueOnce([jev]);
+  const routes = [writer, analyst, { ...writer, name: "tester" }, { ...writer, name: "reviewer" }];
+  classify.mockResolvedValueOnce(classifierResult(0.9, { type: "choice", choice: "writer", probabilities: {
+    writer: 0, analyst: 0.6, tester: Infinity, "sensitive task text": 1,
+  } }));
+  const decision = await run({ ...config, routes, classifiers: [jevBackend] });
+  expect(decision).toMatchObject({ route: "writer", attempts: [attempt(jevBackend, "classifier", "route", { topRouteProbabilities: [
+    { route: "analyst", probability: 0.6 }, { route: "writer", probability: 0 },
+  ] })] });
+  expect(JSON.stringify(decision)).not.toContain("sensitive task text");
+});
+
+test("keeps Jev probabilities from an invalid fit before trying the next backend, without collecting Decisions probabilities", async () => {
+  const { run, classify, getAvailableOfType } = setup();
+  getAvailableOfType.mockResolvedValueOnce([jev]).mockResolvedValueOnce([{ id: "decisions", api: "openai-decisions" }]);
+  const choice = { type: "choice", choice: "writer", probabilities: { analyst: 0.5, writer: 0.5 } };
+  classify.mockResolvedValueOnce(classifierResult(-1, choice)).mockResolvedValueOnce(classifierResult(0.9, choice));
+  const result = await run({ ...config, classifiers: [jevBackend, "q/decisions"] });
+  expect(result.backend).toBe("q/decisions");
+  expect(result.attempts).toEqual([attempt(jevBackend, "classifier", "invalid", { error: "invalid_fit", topRouteProbabilities: [
+    { route: "writer", probability: 0.5 }, { route: "analyst", probability: 0.5 },
+  ] }), decisions]);
+});
+
+test.each([
+  { type: "choice", choice: "writer" },
+  { type: "choice", choice: "writer", probabilities: [1] },
+  { type: "choice", choice: "writer", probabilities: { writer: -1, analyst: 1.1 } },
+])("does not infer Jev route probabilities from a missing or unusable distribution %#", async (choice) => {
+  const { run, classify, getAvailableOfType } = setup();
+  getAvailableOfType.mockResolvedValueOnce([jev]);
+  classify.mockResolvedValueOnce(classifierResult(0.9, choice));
+  const decision = await run({ ...config, classifiers: [jevBackend] });
+  expect(decision.route).toBe("writer");
+  expect(decision.attempts[0]).not.toHaveProperty("topRouteProbabilities");
+});
+
+test("does not use Jev's one-route fit as a route probability", async () => {
+  const { run, getAvailableOfType } = setup();
+  getAvailableOfType.mockResolvedValueOnce([jev]);
+  const decision = await run({ ...config, classifiers: [jevBackend], routes: [writer] });
+  expect(decision.attempts).toEqual([attempt(jevBackend, "classifier", "route", { fit: 0.9, route: "writer" })]);
+});
+
 test("tries Decisions after missing credentials", async () => {
   const { run, getAvailableOfType } = setup();
   getAvailableOfType.mockResolvedValueOnce([]);

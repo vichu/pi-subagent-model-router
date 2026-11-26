@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter, type ExtensionAPI, type ExtensionContext, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
@@ -11,14 +11,15 @@ import { parseConfig, type RouterConfig } from "./config.ts";
 import { captureChildCost } from "./cost-dashboard.ts";
 import { decisionLabel, type DecisionRecord, decisionStatusText, routerVersion, taskSummary } from "./decisions.ts";
 import { decisionEntryType, reportedRunUsage, type RunReceipt, runEntryType, runSessionKey } from "./history.ts";
-import { checkChatModel, determineRoute, type RoutingDecision } from "./router.ts";
+import { type Attempt, checkChatModel, determineRoute, type RoutingDecision } from "./router.ts";
 import { setRouterLastDecision, setRouterStatus } from "./router-status.ts";
 
 // Every top-level `subagent` parameter in the pi-subagents tool schema belongs to exactly one of these sets;
 // test/subagent-schema.contract.test.ts fails when the installed schema adds an unclassified key.
 // Routable keys form a plain launch. `label` only names the run in listings and child session titles.
 export const routableSubagentKeys: ReadonlySet<string> = new Set(["agent", "task", "async", "label"]);
-// Explicit model, workflow, placement, output, management, and option keys. Calls that use them abstain silently.
+// Explicit model, workflow, placement, output, management, and option keys. Calls that use them abstain silently,
+// except when `cwd` resolves to the existing workspace and does not change placement.
 // `tasks` and `chain` replace `workflow` and `args` when pi-subagents disables workflow scripts.
 export const nonRoutableSubagentKeys: ReadonlySet<string> = new Set([
   "model", "workflow", "args", "tasks", "chain", "cwd", "worktree", "output", "action", "id", "message", "options",
@@ -150,6 +151,7 @@ type DecisionTrace = {
   debug: boolean;
   sessionKey?: string;
   piSubagents?: string;
+  attempts: Attempt[];
   routing?: RoutingDecision;
   requestId?: string;
 };
@@ -179,13 +181,15 @@ export function registerNativeRouting(pi: ExtensionAPI, configFile: URL, session
     trace.sessionKey = runSessionKey(ctx.sessionManager);
     if (configuredPlacement) return skip("native_placement_config");
     const input = event.input as Record<string, unknown>;
-    const { agent, task, async, label } = input;
+    const { agent, task, async, label, cwd } = input;
     const invalid = Object.entries({
       agent: typeof agent !== "string" || !agent.trim(), task: typeof task !== "string" || !task.trim(),
       async: async !== undefined && typeof async !== "boolean", label: label !== undefined && typeof label !== "string",
     }).flatMap(([key, bad]) => bad ? [key] : []);
     if (typeof agent !== "string" || typeof task !== "string" || invalid.length) return skip("invalid_params", invalid.join(", "));
-    const otherKeys = Object.keys(input).filter((key) => !routableSubagentKeys.has(key));
+    // Match native path resolution, not filesystem identity: a symlink alias can change discovery and policy paths.
+    const sameWorkspace = typeof cwd === "string" && cwd.length > 0 && resolve(ctx.cwd, cwd) === ctx.cwd;
+    const otherKeys = Object.keys(input).filter((key) => !routableSubagentKeys.has(key) && !(key === "cwd" && sameWorkspace));
     const deliberate = otherKeys.filter((key) => nonRoutableSubagentKeys.has(key));
     if (deliberate.length) return skip(deliberate.includes("model") ? "explicit_model" : "deliberate_params", deliberate.join(", "));
     if (signal.aborted) return skip("aborted");
@@ -261,7 +265,7 @@ export function registerNativeRouting(pi: ExtensionAPI, configFile: URL, session
 
     trace.step = "routing";
     const current = ctx.model && { model: `${ctx.model.provider}/${ctx.model.id}`, thinking: pi.getThinkingLevel() };
-    trace.routing = await determineRoute(config, task, registry, current, signal);
+    trace.routing = await determineRoute(config, task, registry, current, signal, trace.attempts);
     const { target, route, backend } = trace.routing;
     const { model, unavailable } = checkChatModel(registry, target.model);
     // A detached child may not share providers registered by parent extensions.
@@ -300,7 +304,7 @@ export function registerNativeRouting(pi: ExtensionAPI, configFile: URL, session
       outcome: result.outcome,
       reason: result.outcome === "skipped" ? result.reason : undefined,
       detail: result.outcome === "skipped" || result.outcome === "error" ? result.detail : undefined,
-      attempts: routing?.attempts ?? [],
+      attempts: trace.attempts,
       route: routing?.route,
       backend: routing?.backend,
       model: routing?.target.model,
@@ -381,7 +385,7 @@ export function registerNativeRouting(pi: ExtensionAPI, configFile: URL, session
     if (typeof input.agent === "string" && input.agent.trim() && typeof input.task === "string" && input.task.trim() &&
       input.action === undefined) redirectFirstCodemode = false;
     const startedAt = performance.now();
-    const trace: DecisionTrace = { step: "params", debug: false };
+    const trace: DecisionTrace = { step: "params", debug: false, attempts: [] };
     const signal = AbortSignal.any([session, ...(ctx.signal ? [ctx.signal] : [])]);
     let result: HookResult;
     try {
