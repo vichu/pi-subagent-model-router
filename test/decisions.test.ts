@@ -26,6 +26,24 @@ test("readDecisions keeps well-formed decisions, including minimal and fallback 
   expect(readDecisions([entry(decision), { type: "message" } as SessionEntry, entry(minimal), entry(fallback)])).toEqual([decision, minimal, fallback]);
 });
 
+test("readDecisions reads Jev probabilities without retaining extra fields", () => {
+  const topRouteProbabilities = [{ route: "writer", probability: 0.9 }, { route: "analyst", probability: 0.1 }];
+  const stored = entry({ ...decision, attempts: [{ ...decision.attempts[0],
+    topRouteProbabilities: topRouteProbabilities.map((score) => ({ ...score, raw: "not telemetry" })),
+  }] });
+  expect(readDecisions([stored])[0].attempts[0].topRouteProbabilities).toEqual(topRouteProbabilities);
+});
+
+const score = (route: string, probability: unknown) => ({ route, probability });
+test.each([
+  null, {}, [], [null], [score("a", "1")], [score("a", NaN)], [score("a", 1.1)], [score("a", -0.1)],
+  [score("invalid route", 1)], [score("a".repeat(65), 1)], [score("a", 0.7), score("a", 0.3)],
+  [score("a", 0.1), score("b", 0.9)], [score("a", 0.4), score("b", 0.3), score("c", 0.2), score("d", 0.1)],
+].map((value) => [value]))("omits malformed optional probability telemetry without losing the decision (%j)", (topRouteProbabilities) => {
+  const stored = entry({ ...decision, attempts: [{ ...decision.attempts[0], topRouteProbabilities }] });
+  expect(readDecisions([stored])).toEqual([decision]);
+});
+
 const malformedEntries: Array<[string, SessionEntry]> = [
   ["another custom type", entry(decision, runEntryType)], ["no data", entry(undefined)], ["array data", entry([decision])],
   ...([

@@ -137,9 +137,32 @@ test("routes a labeled call and keeps the label", async () => {
   expect(ctx.ui.notify).not.toHaveBeenCalled();
 });
 
+test.each(["absolute", "relative"])("routes a labeled foreground call with %s same-workspace cwd", async (form) => {
+  const fixture = await setup();
+  const { call, ctx } = fixture;
+  await withClassifier(fixture);
+  const input = { ...nativeCall, cwd: form === "absolute" ? ctx.cwd : ".", async: false, label: "Describe sample" };
+  expect(await call(input)).toEqual({ ...input, model: "demo/routed:low" });
+  expect(decisionsOf(fixture)).toEqual([expect.objectContaining({ outcome: "routed", route: "example", backend: "demo/classifier" })]);
+  expect(preview.mock.calls.map(([input]) => input.cwd)).toEqual([ctx.cwd, ctx.cwd]);
+});
+
+test("skips a different cwd, including a symlink alias of the current workspace", async () => {
+  const fixture = await setup();
+  const { call, ctx, dir, getAllTools } = fixture;
+  const alias = join(dir, "workspace-alias");
+  await symlink(ctx.cwd, alias, "junction");
+  for (const cwd of ["..", alias, "", 42]) {
+    const input = { ...nativeCall, cwd, async: false, label: "Describe sample" };
+    expect(await call(input)).toEqual(input);
+    expect(decisionsOf(fixture).at(-1)).toMatchObject({ outcome: "skipped", reason: "deliberate_params", detail: "cwd" });
+  }
+  expect(getAllTools).not.toHaveBeenCalled();
+});
+
 test("abstains silently on a deliberate model and visibly, once per session, on an unrecognized parameter", async () => {
   const { call, ctx, getAllTools, register } = await setup();
-  const explicit = { ...nativeCall, model: "demo/explicit:high", label: "Pinned" };
+  const explicit = { ...nativeCall, model: "demo/explicit:high", cwd: ctx.cwd, label: "Pinned" };
   expect(await call(explicit)).toEqual(explicit);
   expect(ctx.ui.notify).not.toHaveBeenCalled();
   const unknown = { ...nativeCall, label: "Describe sample", priority: "high" };
@@ -660,6 +683,25 @@ test("records a base fallback decision after a classifier abstains", async () =>
   expect(await fixture.call()).toMatchObject({ model: "demo/routed:low" });
   expect(decisionsOf(fixture)).toEqual([expect.objectContaining({ outcome: "fallback", route: null, backend: "demo/classifier", model: "demo/routed",
     thinking: "low", requestId: expect.any(String), attempts: [expect.objectContaining({ result: "abstain", fit: 0.2 })] })]);
+});
+
+test.each(["routed", "fallback", "error"])("persists Jev route probabilities in a native %s decision", async (outcome) => {
+  const fixture = await setup();
+  const { config, configFile, ctx, registry, write } = fixture;
+  const backend = "typesafe/jev-latest";
+  const [example] = config.routes;
+  await write(configFile, { ...config, classifiers: [backend], routes: [example, { ...example, name: "other" }] });
+  if (outcome === "error") ctx.model = undefined as unknown as typeof ctx.model;
+  const fit = outcome === "routed" ? 0.9 : 0.2;
+  Object.assign(registry, { getAvailableOfType: vi.fn().mockResolvedValue([{ id: "jev-latest", api: "typesafe-system-one" }]),
+    classify: vi.fn().mockResolvedValue({ stopReason: "stop", answers: {
+      fits: { type: "bool", probability: fit }, route: { type: "choice", choice: "example", probabilities: { other: 0.3, example: 0.7 } },
+    } }) });
+  expect(await fixture.call()).toEqual(outcome === "error" ? nativeCall : { ...nativeCall, model: "demo/routed:low" });
+  const entries = JSON.parse(JSON.stringify(fixture.entries)) as SessionEntry[];
+  expect(readDecisions(entries)).toMatchObject([{ outcome, attempts: [{ backend, fit, result: outcome === "routed" ? "route" : "abstain",
+    topRouteProbabilities: [{ route: "example", probability: 0.7 }, { route: "other", probability: 0.3 }],
+  }] }]);
 });
 
 test("records a background launch at decision time even though it writes no receipts", async () => {

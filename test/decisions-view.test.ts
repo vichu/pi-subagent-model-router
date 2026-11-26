@@ -26,8 +26,10 @@ const routed: DecisionRecord = {
 };
 const fallback: DecisionRecord = {
   ...shared, toolCallId: "call-fallback", agent: "delegate", task: task("Recommend a side dish for a picnic", "Recommend a side dish for a picnic\nwith two options."),
-  outcome: "fallback", route: null, backend: "openai/gpt-6-luna", model: "openai-codex/gpt-6.2-sol", thinking: "medium", requestId: "req-2",
-  attempts: [{ backend: "openai/gpt-6-luna", kind: "classifier", result: "abstain", fit: 0.21, ms: 640 }],
+  outcome: "fallback", route: null, backend: "typesafe/jev-latest", model: "openai-codex/gpt-6.2-sol", thinking: "medium", requestId: "req-2",
+  attempts: [{ backend: "typesafe/jev-latest", kind: "classifier", result: "abstain", fit: 0.21, ms: 640, topRouteProbabilities: [
+    { route: "simple_cli_operations", probability: 0.5241 }, { route: "code_review", probability: 0.42 }, { route: "simple_coding", probability: 0.05 },
+  ] }],
 };
 const unrecognized: DecisionRecord = {
   ...shared, toolCallId: "call-params", agent: "scout", task: task("Map how src/native-routing.ts decides whether to add a model override, no changes"),
@@ -132,7 +134,9 @@ test("non-TUI fallback prints a plain report with each reason explained", async 
     "Receipt: completed · run run-1 · effective openai-codex/gpt-6-luna (high)\n1200 input / 340 output / 0 cache read / 0 cache write · $0.012300",
     "↺ fallback → openai-codex/gpt-6.2-sol:medium · delegate · Recommend a side dish for a picnic · 09:05",
     "Task: Recommend a side dish for a picnic (full text in details)",
-    "Final: openai-codex/gpt-6.2-sol (medium) · route base fallback · backend openai/gpt-6-luna",
+    "  typesafe/jev-latest · classifier · abstain · 0.21 · — · 640 ms · —",
+    "  Jev route probabilities: simple_cli_operations 0.5241 · code_review 0.42 · simple_coding 0.05",
+    "Final: openai-codex/gpt-6.2-sol (medium) · route base fallback · backend typesafe/jev-latest",
     "Receipts: none",
     "↷ skipped · unrecognized_params · scout · Map how src/native-routing.ts decides wh · 09:05",
     "Why: pi-subagents sent parameters the router doesn't know: priority.\nFix: Update pi-subagent-model-router.",
@@ -144,7 +148,7 @@ test("non-TUI fallback prints a plain report with each reason explained", async 
     "Task: unavailable",
     "Final: unchanged (native defaults) · route not reached · backend none",
     "Candidate (not applied): openai-codex/gpt-6-luna (low) · route base fallback · backend none",
-    "Versions: router unknown · pi-subagents not detected",
+    "Versions: router unknown · pi-subagents (version not recorded)",
     "Tool call: call-disabled · request none · 1 ms",
     "  demo/router · routing_model · unavailable · — · — · 0 ms · no_auth",
     'Why: Unrecognized reason code "future_reason"; it may come from another router version.',
@@ -188,6 +192,19 @@ test("drills into a decision's task, attempts, and receipts, then returns to the
   expect(screens[3]).toContain("with two options.");
 });
 
+test("shows the Jev probabilities in the decision and individual attempt previews", async () => {
+  let attemptPreview: string | undefined;
+  const { ctx, screens } = setup([fallback], "tui", ["0", (view) => {
+    view.handleInput!("\x1b[B");
+    attemptPreview = view.render(140).join("\n");
+    return undefined;
+  }, undefined]);
+  await showDecisions(ctx, missingConfig, new AbortController().signal);
+  const probabilityLine = "Jev route probabilities: simple_cli_operations 0.5241 · code_review 0.42 · simple_coding 0.05";
+  expect(screens[0]).toContain(probabilityLine);
+  expect(attemptPreview).toContain(probabilityLine);
+});
+
 test("drill-down notes a decision recorded without task text", async () => {
   const { ctx, screens } = setup([disabled], "tui", ["0", undefined, undefined]);
   await showDecisions(ctx, missingConfig, new AbortController().signal);
@@ -197,13 +214,17 @@ test("drill-down notes a decision recorded without task text", async () => {
 test("Copy diagnostics shows a redacted bundle and returns to the list", async () => {
   vi.stubEnv("OPENAI_API_KEY", "sk-test-secret");
   const raw = JSON.stringify(config);
-  const { ctx, editor, screens } = setup(all, "tui", ["Copy diagnostics", undefined]);
+  const top = fallback.attempts[0].topRouteProbabilities!;
+  const { ctx, editor, screens } = setup(all.map((record) => record === fallback ? { ...fallback, attempts: [{ ...fallback.attempts[0],
+    topRouteProbabilities: top.map((score) => ({ ...score, raw: "provider-raw-secret" })),
+  }] } : record), "tui", ["Copy diagnostics", undefined]);
   await showDecisions(ctx, await configFile(raw), new AbortController().signal);
   expect(screens).toHaveLength(2);
   const [[editorTitle, text]] = editor.mock.calls;
   expect(editorTitle).toBe("Routing diagnostics · redacted JSON (select and copy, then press Esc)");
   expect(text).not.toContain(home);
   expect(text).not.toContain("sk-test-secret");
+  expect(text).not.toContain("provider-raw-secret");
   expect(text).not.toContain("with two options");
   expect(text).not.toContain("when_to_use");
   const bundle = JSON.parse(text);
@@ -218,6 +239,8 @@ test("Copy diagnostics shows a redacted bundle and returns to the list", async (
   });
   expect(bundle.decisions).toHaveLength(7);
   expect(bundle.decisions[1].task).toEqual({ preview: fallback.task!.preview, sha256: fallback.task!.sha256 });
+  expect(bundle.decisions[1].attempts[0].topRouteProbabilities).toEqual(top);
+  expect(bundle.decisions[0].attempts[1]).not.toHaveProperty("topRouteProbabilities");
   expect(bundle.decisions[3].detail).toBe("~/.pi/agent/settings.json");
   expect(bundle.decisions[4]).not.toHaveProperty("task");
 });

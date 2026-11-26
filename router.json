@@ -6,7 +6,7 @@
       "thinking": "low",
       "name": "simple_cli_operations",
       "label": "Routine CLI and Git operations",
-      "when_to_use": "The deliverable is the result of a straightforward shell operation with a clear command and target, such as grep or rg for a known term, git status or diff, a routine Git operation, listing files, or running a known local command. If commands are only steps toward implementing, diagnosing, designing, or working on a LaTeX document, choose the route for that deliverable instead."
+      "when_to_use": "The deliverable is the result of straightforward shell or Git operations with a clear target, such as searching for a known term, checking git status or diff, listing files, or running a known local command. This includes verifying and publishing an already-prepared patch: run the known checks, then commit, push, and open a pull request as requested. If commands are only steps toward implementing, diagnosing, reviewing, designing, or working on a LaTeX document, choose the route for that deliverable instead."
     },
     {
       "model": "openai-codex/gpt-6-luna",

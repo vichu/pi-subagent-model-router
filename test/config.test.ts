@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { expect, test } from "vitest";
 import { parseConfig } from "../src/config.ts";
 
@@ -7,6 +8,14 @@ const parse = (value: unknown) => parseConfig(JSON.stringify(value));
 
 test("defaults to Jev, then Decisions API", () => {
   expect(parse(base)).toEqual({ enabled: true, routes: [route], classifiers: ["typesafe/jev-latest", "openai/gpt-6-luna"] });
+});
+
+test("the default simple_cli_operations route covers verifying and publishing a prepared patch", () => {
+  const config = parseConfig(readFileSync(new URL("../router.json", import.meta.url), "utf8"));
+  expect(config.routes.find(({ name }) => name === "simple_cli_operations")).toMatchObject({
+    model: "openai-codex/gpt-6-luna", thinking: "low",
+    when_to_use: expect.stringMatching(/prepared patch:.*checks.*commit, push, and open a pull request/),
+  });
 });
 
 test("parseConfig drops a stale route agent key like other unknown fields", () => {

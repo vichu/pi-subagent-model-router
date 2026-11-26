@@ -52,8 +52,8 @@ test("every top-level subagent parameter in the installed pi-subagents schema is
   expect(unclassified, `Classify these pi-subagents \`subagent\` parameters in src/native-routing.ts: add a key to routableSubagentKeys ` +
     "only if it cannot change launch semantics (model, thinking, agent, cwd, context, tools, run mode, budgets), otherwise to nonRoutableSubagentKeys.").toEqual([]);
   expect([...routableSubagentKeys].filter((key) => nonRoutableSubagentKeys.has(key))).toEqual([]);
-  // The routing hook checks these types before routing.
+  // The routing hook checks these types before routing, including the guarded cwd exception.
   for (const { properties } of schemas) {
-    expect([properties.agent?.type, properties.task?.type, properties.async?.type, properties.label?.type]).toEqual(["string", "string", "boolean", "string"]);
+    expect([properties.agent?.type, properties.task?.type, properties.async?.type, properties.label?.type, properties.cwd?.type]).toEqual(["string", "string", "boolean", "string", "string"]);
   }
 }, 45_000);

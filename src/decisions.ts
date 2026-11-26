@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import { routeNamePattern } from "./config.ts";
 import { decisionEntryType, type RunReceipt } from "./history.ts";
 import type { RoutingOutcome, RoutingSkipReason } from "./native-routing.ts";
-import type { Attempt } from "./router.ts";
+import { type Attempt, isProbability, type RouteProbability, topRouteProbabilityLimit } from "./router.ts";
 
 /** Data of a `decisionEntryType` session entry. Full task text is present only when router.json enables debug. */
 export type DecisionRecord = {
@@ -76,12 +77,32 @@ const optional = (value: unknown, type: "string" | "number") => value === undefi
 const nullableString = (value: unknown) => value === null || optional(value, "string");
 const finite = (value: unknown) => typeof value === "number" && Number.isFinite(value);
 
-function isAttempt(value: unknown): value is Attempt {
+type StoredAttempt = Omit<Attempt, "topRouteProbabilities"> & { topRouteProbabilities?: unknown };
+
+function isAttempt(value: unknown): value is StoredAttempt {
   return isRecord(value) && typeof value.backend === "string" && attemptKinds.has(value.kind) && attemptResults.has(value.result) &&
     finite(value.ms) && optional(value.fit, "number") && optional(value.route, "string") && optional(value.error, "string");
 }
 
-function isDecisionRecord(data: unknown): data is DecisionRecord {
+function readTopRouteProbabilities(value: unknown): RouteProbability[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > topRouteProbabilityLimit) return;
+  const top: RouteProbability[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) return;
+    const { route, probability } = item;
+    if (typeof route !== "string" || !routeNamePattern.test(route) || !isProbability(probability) ||
+        (top.at(-1)?.probability ?? 1) < probability || top.some((score) => score.route === route)) return;
+    top.push({ route, probability });
+  }
+  return top;
+}
+
+function readAttempt({ topRouteProbabilities, ...attempt }: StoredAttempt): Attempt {
+  const top = attempt.kind === "classifier" ? readTopRouteProbabilities(topRouteProbabilities) : undefined;
+  return top ? { ...attempt, topRouteProbabilities: top } : attempt;
+}
+
+function isDecisionRecord(data: unknown): data is Omit<DecisionRecord, "attempts"> & { attempts: StoredAttempt[] } {
   if (!isRecord(data)) return false;
   const { task, versions } = data;
   return typeof data.toolCallId === "string" && typeof data.at === "string" && outcomes.has(data.outcome) &&
@@ -95,7 +116,7 @@ function isDecisionRecord(data: unknown): data is DecisionRecord {
 /** Decision records in entry order; malformed or foreign entries are ignored. */
 export function readDecisions(entries: readonly SessionEntry[]): DecisionRecord[] {
   return entries.flatMap((entry) => entry.type === "custom" && entry.customType === decisionEntryType && isDecisionRecord(entry.data)
-    ? [entry.data] : []);
+    ? [{ ...entry.data, attempts: entry.data.attempts.map(readAttempt) }] : []);
 }
 
 /** Pairs each decision with the receipts written for its request in the same session. */
