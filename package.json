@@ -1,6 +1,6 @@
 {
   "name": "pi-subagent-model-router",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "repository": "git+https://github.com/vichu/pi-subagent-model-router.git",
   "description": "Config-driven model routing for Pi subagents",
   "type": "module",
