@@ -40,9 +40,9 @@
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.6.0",
     "@types/node": "^22",
-    "@vitest/coverage-v8": "4.1.9",
+    "@vitest/coverage-v8": "5.1.1",
     "typescript": "~5.9.3",
-    "vitest": "4.1.9"
+    "vitest": "5.1.1"
   },
   "dependencies": {
     "pi-subagents": ">=0.89.1"
