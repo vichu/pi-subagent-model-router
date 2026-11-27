@@ -27,11 +27,13 @@ pi install npm:pi-subagents
 
 The router does not require a specific `pi-subagents` version. It checks that the loaded `pi-subagents` exposes the public launch preflight and capability-ceiling APIs it uses. If they are missing, native routing stays off, the status shows `Router: pi-subagents incompatible`, and Pi shows one warning per session naming the detected `pi-subagents` version. CI runs the tests against the locked `pi-subagents` version, and Dependabot proposes updates that are merged only when the tests pass.
 
-Install the router release that includes native routing, then restart Pi:
+Install the router, then restart Pi:
 
 ```sh
-pi install npm:pi-subagent-model-router@0.5.2
+pi install npm:pi-subagent-model-router
 ```
+
+To upgrade later, run `pi update npm:pi-subagent-model-router`.
 
 To try a checkout without changing your Pi settings, see [Local smoke test](#local-smoke-test).
 
