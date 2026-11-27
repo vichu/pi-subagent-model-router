@@ -355,14 +355,24 @@ export function registerNativeRouting(pi: ExtensionAPI, configFile: URL, session
     }
     redirectFirstCodemode = true;
     const guidance = [
-      "## Subagent routing: parent role",
-      "When this router is enabled, start by delegating the actual work for fresh workspace tasks. That includes read-only repository investigation, even when the request is phrased as a question, as well as code changes, debugging, testing, and review.",
-      "Call subagent directly. If only subagents_enable is available, call it first, then delegate as soon as subagent is available. Do not try unavailable tools or call subagent through Codemode. Use Codemode to coordinate or verify results, not instead of delegation.",
-      "Use an advertised agent suited to the task; do not guess agent names. Give the worker a concrete deliverable, relevant context, scope, and acceptance checks. For implementation, ask an edit-capable worker to make the changes and run checks.",
-      "Leave model selection to the router unless the user specifies a worker model. Use foreground delegation (async: false) when you need the result before replying. Reconcile results, verify the outcome as needed, and summarize what was done and what remains.",
-      "For a recap, summary, or options based on work already completed, use the existing results instead of delegating again. Answer simple conversational questions directly. Respect explicit user limits on delegation and tool use. If delegation is unavailable or fails, report it accurately.",
-    ].join("\n");
-    return { systemPrompt: `${event.systemPrompt}\n\n${guidance}` };
+      "Subagent routing: the parent session orchestrates and consolidates; delegate fresh workspace work, including read-only repository investigation even when phrased as a question.",
+      "While the router is enabled, delegation is pre-authorized: never ask permission to delegate, and respect explicit user limits on delegation and tool use.",
+      "Delegation does not authorize destructive actions or credential bypass. Do not push or publish unless the user explicitly asks.",
+      "Prefer sending a bounded child brief before substantive exploration, edits, shell commands, tests, or Git work.",
+      "Give each child the goal, workspace, edit boundary, success criteria, validation steps, and required handoff summary.",
+      "Route execution tasks such as tests, builds, Git, and pull requests to a child; use an edit-capable worker for implementation.",
+      "For non-trivial implementation: clarify → scout or context-builder → planner → worker → fresh-context reviewer → synthesis. Skip stages that add no value.",
+      "Call subagent directly; if only subagents_enable is available, call it first, then delegate. Never call subagent through Codemode; use Codemode to coordinate or verify instead.",
+      "Use only agents advertised or listed by pi-subagents; pick one suited to the task and do not guess names.",
+      "Let the router choose the model and thinking for each eligible child, including direct calls you coordinate into chains, parallel runs, or workflows. Do not pin models unless the user asks.",
+      "Give reviewers and oracles fresh context by default. Use foreground delegation (async: false) when you need the result before replying.",
+      "Treat child summaries as evidence: reconcile and verify results, continue until the task is done, and report any remaining work or delegation failures accurately.",
+      "For recaps or options based on completed work, use the existing results instead of delegating again. Answer simple conversational questions directly.",
+    ];
+    const { promptGuidelines } = event.systemPromptOptions;
+    for (const bullet of guidance) {
+      if (!promptGuidelines.includes(bullet)) promptGuidelines.push(bullet);
+    }
   });
 
   pi.on("tool_call", async (event, ctx) => {

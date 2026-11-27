@@ -112,9 +112,12 @@ async function setup() {
     type: "tool_call", toolCallId: "script", toolName: "codemode", parentToolCallId, input: { code: "return 42;" },
   }, { ...ctx, signal } as unknown as ExtensionContext);
   const endTurn = () => hook("agent_end")({}, ctx as unknown as ExtensionContext);
-  const start = (messageType = "user", signal?: AbortSignal) => hook("before_agent_start")(
-    { messageType, systemPrompt: "Existing prompt" }, { ...ctx, signal } as unknown as ExtensionContext,
-  );
+  const start = async (messageType = "user", signal?: AbortSignal, promptGuidelines: string[] = []) => {
+    const result = await hook("before_agent_start")({
+      messageType, systemPrompt: "Existing prompt", systemPromptOptions: { promptGuidelines },
+    }, { ...ctx, signal } as unknown as ExtensionContext);
+    return { result, promptGuidelines };
+  };
   return { dir, write, call, end, invokeCodemode, endTurn, start, getActiveTools, getThinkingLevel, entries, appendEntry, appendReceipt, appendDecision, getHeader, ctx, registry, model, getAllTools, controller, register, manifest, nativeManifest, preflightPath, ceilingPath, agentFile, configFile, config, response, userSettings, projectSettings, nativeConfig };
 }
 
@@ -553,39 +556,57 @@ test.each([
   fixture.getActiveTools.mockReturnValue(["read"]);
 
   await fixture.write(fixture.configFile, { ...fixture.config, enabled: false });
-  expect(await fixture.start()).toBeUndefined();
+  expect((await fixture.start()).promptGuidelines).toEqual([]);
   expect(fixture.ctx.ui.notify).not.toHaveBeenCalled();
 
   await fixture.write(fixture.configFile, fixture.config);
-  expect(await fixture.start()).toBeUndefined();
-  expect(await fixture.start()).toBeUndefined();
+  expect((await fixture.start()).promptGuidelines).toEqual([]);
+  expect((await fixture.start()).promptGuidelines).toEqual([]);
   expect(fixture.ctx.ui.notify).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(message), "warning");
 
   fixture.getActiveTools.mockReturnValue(["read", "subagent"]);
-  expect(await fixture.start()).toEqual({ systemPrompt: expect.stringContaining("start by delegating the actual work") });
+  expect((await fixture.start()).promptGuidelines).toContainEqual(expect.stringContaining("delegate fresh workspace work"));
 });
 
-test("ordinary chat gets delegation guidance without launching a worker or changing the parent", async () => {
+test("before_agent_start adds prompt guidelines in place without replacing the prompt or duplicating bullets", async () => {
   const fixture = await setup();
-  expect(await fixture.start()).toEqual({ systemPrompt: expect.stringMatching(/^Existing prompt[\s\S]+start by delegating the actual work/) });
-  expect(await fixture.start("custom")).toBeUndefined();
+  const { result, promptGuidelines } = await fixture.start();
+  expect(result).toBeUndefined();
+  expect(promptGuidelines).toEqual(expect.arrayContaining([
+    expect.stringContaining("read-only repository investigation"),
+    expect.stringContaining("never ask permission to delegate"),
+    expect.stringContaining("use the existing results instead of delegating again"),
+  ]));
+  expect(new Set(promptGuidelines).size).toBe(promptGuidelines.length);
+
+  const existing = ["An existing guideline", promptGuidelines[0]];
+  const expected = [existing[0], ...promptGuidelines];
+  expect((await fixture.start("user", undefined, existing)).result).toBeUndefined();
+  expect(existing).toEqual(expected);
+  await fixture.start("user", undefined, existing);
+  expect(existing).toEqual(expected);
+  expect(preview).not.toHaveBeenCalled();
+  expect(fixture.appendEntry).not.toHaveBeenCalled();
+});
+
+test("before_agent_start leaves prompt guidelines alone on ineligible turns", async () => {
+  const fixture = await setup();
+  expect((await fixture.start("custom")).promptGuidelines).toEqual([]);
 
   fixture.getActiveTools.mockReturnValueOnce(["read"]);
-  expect(await fixture.start()).toBeUndefined();
+  expect((await fixture.start()).promptGuidelines).toEqual([]);
   vi.stubEnv("PI_SUBAGENT_CHILD", "1");
-  expect(await fixture.start()).toBeUndefined();
+  expect((await fixture.start()).promptGuidelines).toEqual([]);
   vi.stubEnv("PI_SUBAGENT_CHILD", undefined);
 
   await fixture.write(fixture.configFile, { ...fixture.config, enabled: false });
-  expect(await fixture.start()).toBeUndefined();
+  expect((await fixture.start()).promptGuidelines).toEqual([]);
   await fixture.write(fixture.configFile, "invalid json");
-  expect(await fixture.start()).toBeUndefined();
+  expect((await fixture.start()).promptGuidelines).toEqual([]);
   await fixture.write(fixture.configFile, fixture.config);
-  expect(await fixture.start()).toBeDefined();
+  expect((await fixture.start()).promptGuidelines.length).toBeGreaterThan(0);
   fixture.controller.abort();
-  expect(await fixture.start()).toBeUndefined();
-  expect(preview).not.toHaveBeenCalled();
-  expect(fixture.appendEntry).not.toHaveBeenCalled();
+  expect((await fixture.start()).promptGuidelines).toEqual([]);
 });
 
 test("guides and routes delegation when only the native loader is visible at the start of the turn", async () => {
@@ -594,8 +615,8 @@ test("guides and routes delegation when only the native loader is visible at the
   await withClassifier(fixture);
   fixture.getActiveTools.mockReturnValue(["codemode", "subagents_enable"]);
 
-  const prompt = await fixture.start();
-  expect(prompt).toMatchObject({ systemPrompt: expect.stringContaining("call it first, then delegate") });
+  const { promptGuidelines } = await fixture.start();
+  expect(promptGuidelines).toContainEqual(expect.stringContaining("subagents_enable is available, call it first, then delegate"));
   expect(fixture.ctx.ui.notify).not.toHaveBeenCalled();
   expect(await fixture.invokeCodemode()).toMatchObject({
     block: true,
@@ -640,7 +661,7 @@ test.each(["tool no longer active", "parent shutdown", "prompt abort", "child ru
   async (change) => {
     const fixture = await setup();
     const turn = new AbortController();
-    expect(await fixture.start("user", turn.signal)).toBeDefined();
+    expect((await fixture.start("user", turn.signal)).promptGuidelines.length).toBeGreaterThan(0);
 
     switch (change) {
       case "tool no longer active": fixture.getActiveTools.mockReturnValue(["codemode"]); break;

@@ -77,16 +77,17 @@ test.each([
     expect(classify).toHaveBeenCalledWith({ id: "jev-latest" }, expect.objectContaining({
       state: { task: args, routes: { writing: "Writing: Draft prose", analysis: "Analysis: Analyze a topic" } },
     }), { signal: expect.any(AbortSignal) });
-    expect(req).toMatchObject({ model, thinking, cwd: "/demo", context: "fresh", agent: "router-spike-worker", toolBudget: { hard: 0, block: "*" } });
+    expect(req).toMatchObject({ model, thinking, cwd: "/demo", context: "fresh", agent: "delegate", task: args,
+      toolBudget: { hard: 0, block: "*" }, result: { kind: "text" } });
     bus.emit(responseEvent, undefined);
     for (const key of ["requestId", "ownerRunId", "nodeId"]) bus.emit(responseEvent, { ...req, [key]: "other" });
     bus.emit(startedEvent, req);
-    queueMicrotask(() => bus.emit(responseEvent, { ...req, agent: "router-spike-worker", status: "completed", result: { kind: "text", text: "done" } }));
+    queueMicrotask(() => bus.emit(responseEvent, { ...req, agent: "delegate", status: "completed", result: { kind: "text", text: "done" } }));
   });
   await run();
   expect(vi.mocked(readFile).mock.calls[0][0]).toEqual(new URL("../router.json", import.meta.url));
   expect(bus.listenerCount(responseEvent)).toBe(0);
-  expect(notify).toHaveBeenCalledWith(`${route}: requested ${model} (${thinking}); effective ${model} (${thinking}); agent router-spike-worker (text)\ndone`, "info");
+  expect(notify).toHaveBeenCalledWith(`${route}: requested ${model} (${thinking}); effective ${model} (${thinking}); agent delegate (text)\ndone`, "info");
 });
 
 test("registers only the workspace command and checks UI availability", async () => {
@@ -214,7 +215,7 @@ test("shows one persisted row per request, including reported effective settings
   const report = await history();
   expect(report).toContain("Router requests with usage observations (whole session): 1");
   expect(report).toContain("Totals and savings unavailable");
-  expect(report).toContain("writing · completed · router-spike-worker\nRequested: demo/writer (off)\nEffective: demo/real (low)\nClassifier: typesafe/jev-latest\nRun: worker-123\nReported: 10 in / 12 out / ? cache read / 2 cache write\nReported cost (USD): $0.003");
+  expect(report).toContain("writing · completed · delegate\nRequested: demo/writer (off)\nEffective: demo/real (low)\nClassifier: typesafe/jev-latest\nRun: worker-123\nReported: 10 in / 12 out / ? cache read / 2 cache write\nReported cost (USD): $0.003");
   expect(JSON.stringify(appendEntry.mock.calls)).not.toMatch(/Summarize this|private output|turns/);
 });
 
@@ -299,7 +300,7 @@ test("does not put a terminal receipt into a different session", async () => {
 
 test("keeps rejected requests distinct from confirmed launches", async () => {
   const { bus, run, history, notify } = setup();
-  bus.on(requestEvent, ({ requestId, ownerRunId, nodeId }) => bus.emit(responseEvent, { requestId, ownerRunId, nodeId, status: "invalid_request", error: "Unknown agent: router-spike-worker\nuntrusted details" }));
+  bus.on(requestEvent, ({ requestId, ownerRunId, nodeId }) => bus.emit(responseEvent, { requestId, ownerRunId, nodeId, status: "invalid_request", error: "Unknown agent: delegate\nuntrusted details" }));
   await run();
   expect(notify).toHaveBeenCalledWith(expect.stringContaining("rejected the delegation request (invalid_request)"), "error");
   expect(notify.mock.calls[0][0]).not.toMatch(/untrusted details|pi install/);
@@ -421,14 +422,14 @@ test("fails promptly when no compatible pi-subagents bridge acknowledges the man
   expect(appendEntry).toHaveBeenLastCalledWith(runEntryType, expect.objectContaining({ status: "unavailable_context" }));
 });
 
-test("diagnoses a missing packaged text agent without trying another agent", async () => {
+test("diagnoses a missing built-in delegate without trying another agent", async () => {
   const { bus, run, notify } = setup();
-  const requests = vi.fn((req) => bus.emit(responseEvent, { ...req, status: "failed", error: "Unknown agent: router-spike-worker\nprovider-body-secret" }));
+  const requests = vi.fn((req) => bus.emit(responseEvent, { ...req, status: "failed", error: "Unknown agent: delegate\nprovider-body-secret" }));
   bus.on(requestEvent, requests);
   await run();
-  expect(notify).toHaveBeenCalledWith(expect.stringContaining("agents/router-spike-worker.md"), "error");
+  expect(notify).toHaveBeenCalledWith(expect.stringContaining("Unknown agent: delegate. Install or update pi-subagents (pi install npm:pi-subagents)"), "error");
   expect(notify.mock.calls[0][0]).not.toContain("provider-body-secret");
-  expect(requests).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ agent: "router-spike-worker" }));
+  expect(requests).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ agent: "delegate" }));
 });
 
 test("does not echo raw worker errors into the UI", async () => {
@@ -459,7 +460,7 @@ test("falls back to the session model when classifiers are unavailable, ignoring
   vi.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ version: 1, routes, base_agent: { model: "demo/base", thinking: "low" } }));
   await run(args, { provider: "demo", id: "current" } as ExtensionCommandContext["model"]);
   expect(classify).not.toHaveBeenCalled();
-  expect(request).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ agent: "router-spike-worker", model: "demo/current", thinking: "off" }));
+  expect(request).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ agent: "delegate", model: "demo/current", thinking: "off" }));
   expect(notify).toHaveBeenCalledWith(expect.stringContaining("fallback answer"), "info");
 });
 
