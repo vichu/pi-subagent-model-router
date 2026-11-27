@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Ship `context-builder` and `planner` as read-only agents discoverable by `pi-subagents`.
+
+### Changed
+
+- Add parent delegation guidance through Pi's structured prompt guidelines instead of replacing the system prompt. The revised guidance covers authorization boundaries, bounded child briefs, and staged implementation and review.
+- **Run a brief** now uses pi-subagents' built-in `delegate` with the same zero-tool budget, replacing the packaged `router-spike-worker`.
+
 ## [0.5.3] - 2026-11-26
 
 ### Changed

@@ -41,6 +41,12 @@ To try a checkout without changing your Pi settings, see [Local smoke test](#loc
 
 Keep keys in Pi's supported credential sources, not in `router.json` or task briefs.
 
+### Packaged agents
+
+The router ships two read-only personas: [`context-builder`](agents/context-builder.md) gathers repository evidence for a handoff, and [`planner`](agents/planner.md) turns that evidence into an implementation plan. Installing the router as a Pi package makes both discoverable by `pi-subagents` through the `pi-subagents.agents` entry in `package.json`. User and project agents with the same names take precedence.
+
+Loading only `src/index.ts` from another workspace does not register these agents. To try them without installing the package, copy the files to your project's `.pi/agents/` directory, then reload Pi in the trusted project. List available agents with `subagent`'s `list` action. To also show these personas in the parent prompt, set `subagents.agentOverrides.<name>.advertise` to `true` for each one in Pi settings and reload.
+
 ### Local smoke test
 
 Load only this checkout and its pinned `pi-subagents` so that no other copy of the router (for example, an old symlink in `~/.pi/agent/extensions/`) loads alongside it. `-ne` skips discovered, configured and built-in extensions, including codemode; `subagent` calls made through codemode are nested and not routed.
@@ -105,7 +111,7 @@ The classifier receives the brief, route names, labels, and criteria—not worke
 
 ### Manual text-only briefs
 
-**Run a brief** is separate from native routing. It uses the public delegation bridge and the packaged [`router-spike-worker`](agents/router-spike-worker.md) with a zero-tool budget. Briefs must be at most 1 MiB after trimming and UTF-8 encoding. It does not expose a model tool or edit the parent prompt. If the worker is unknown, install the router as a Pi package or start in the trusted checkout root. Loading only `src/index.ts` from another workspace does not register its packaged agents. Check for settings that disable the agent if it is still missing. The manual bridge requests pi-subagents' maximum foreground timeout (about 24.8 days) and waits until completion or session shutdown. Native runs keep their own timeout and cancellation behavior.
+**Run a brief** is separate from native routing. It sends the brief over the public delegation bridge using pi-subagents' built-in `delegate` agent in a fresh context, requesting text back and blocking all tools with `toolBudget: { hard: 0, block: "*" }`. Briefs must be at most 1 MiB after trimming and UTF-8 encoding. It does not expose a model tool or edit the parent prompt. If `delegate` is unknown, install or update `pi-subagents`, check that your subagent settings do not disable the built-in, and restart Pi. The manual bridge requests pi-subagents' maximum foreground timeout (about 24.8 days) and waits until completion or session shutdown. Native runs keep their own timeout and cancellation behavior.
 
 ## Validate software-engineering routes
 

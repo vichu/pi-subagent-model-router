@@ -97,7 +97,7 @@ function childFailure(response: SubagentDelegationResponse, agent: string, model
     return "pi-subagents rejected the delegation request (invalid_request). Check that the running extension is a current pi-subagents release.";
   }
   if (response.error?.startsWith(`Unknown agent: ${agent}`)) {
-    return `Unknown agent: ${agent}. Install the router as a Pi package or run from its trusted checkout root so pi-subagents can discover agents/router-spike-worker.md. Check that the agent is not disabled by a subagent settings override.`;
+    return `Unknown agent: ${agent}. Install or update pi-subagents (pi install npm:pi-subagents), then restart Pi. Check that the built-in agent is not disabled in your subagent settings.`;
   }
   if (response.status === "unavailable_context") {
     return `pi-subagents delegation unavailable (${response.status}). Install or enable pi-subagents (pi install npm:pi-subagents), then restart Pi.`;
@@ -127,7 +127,7 @@ export default function router(pi: ExtensionAPI) {
     const { model, thinking } = requested;
     const { issue } = checkChatModel(ctx.modelRegistry, model);
     if (issue) throw new Error(`${route}: ${issue}`);
-    const agent = "router-spike-worker";
+    const agent = "delegate";
     const requestId = randomUUID();
     const sessionKey = runSessionKey(ctx.sessionManager);
     const parentFile = ctx.sessionManager.getSessionFile();

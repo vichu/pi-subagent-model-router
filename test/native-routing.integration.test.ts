@@ -55,7 +55,7 @@ test.each([
     const classifier = body.model === "classifier";
     const child = !classifier && body.messages.some(({ role, content }) => role === "user" && JSON.stringify(content).includes(brief));
     // The stub delegates on the first ordinary prompt only if the router supplied guidance.
-    const first = requests.length === 1 && hasInstruction(body.messages, "Subagent routing: parent role");
+    const first = requests.length === 1 && hasInstruction(body.messages, "Subagent routing: the parent session orchestrates and consolidates");
     const redirectReceived = codemodeFirst && !classifier && !child && body.messages.some(({ role, content }) =>
       role === "tool" && JSON.stringify(content).includes("Codemode was not run."),
     );
@@ -154,7 +154,7 @@ test.each([
     const events = stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line));
     const results = events.filter((entry) => entry.type === "tool_execution_end" && entry.toolName === "subagent");
     const requestTrace = requests.map(({ model, messages }) => ({
-      model, roles: messages.map(({ role }) => role), routerGuidance: hasInstruction(messages, "Subagent routing: parent role"),
+      model, roles: messages.map(({ role }) => role), routerGuidance: hasInstruction(messages, "Subagent routing: the parent session orchestrates and consolidates"),
     }));
     expect(results, `${stderr}\nProvider requests: ${JSON.stringify(requestTrace)}`).toHaveLength(1);
     expect(results[0].isError, JSON.stringify(results[0])).toBe(false);
@@ -184,7 +184,7 @@ test.each([
     }
     const child = requests.filter(({ model, messages }) => model !== "classifier" && messages.some(({ role, content }) => role === "user" && JSON.stringify(content).includes(brief)));
     expect(child.map(({ model, reasoning_effort }) => [model, ...(effort ? [reasoning_effort] : [])]), stderr).toEqual([[expected, ...(effort ? [effort] : [])]]);
-    expect(child.every(({ messages }) => !hasInstruction(messages, "Subagent routing: parent role"))).toBe(true);
+    expect(child.every(({ messages }) => !hasInstruction(messages, "Subagent routing: the parent session orchestrates and consolidates"))).toBe(true);
     const classifications = requests.filter(({ model }) => model === "classifier");
     expect(classifications).toHaveLength(expected === "routed" || classifierAnswer ? 1 : 0);
     if (classifications.length) expect(JSON.stringify(classifications[0].messages)).toContain(brief);

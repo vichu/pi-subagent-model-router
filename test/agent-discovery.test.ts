@@ -6,7 +6,7 @@ import { expect, test } from "vitest";
 
 // Use pi-subagents' real discovery in a fresh process: the installed package
 // is in Pi's npm area, and neither the user nor project has an agents directory.
-test("pi-subagents discovers the packaged text agent and workspace built-ins without user or project agents", async () => {
+test("pi-subagents discovers the packaged context-builder and planner alongside built-ins without user or project agents", async () => {
   const root = await mkdtemp(join(tmpdir(), "router-agent-discovery-"));
   try {
     const agentDir = join(root, "pi-agent");
@@ -14,24 +14,31 @@ test("pi-subagents discovers the packaged text agent and workspace built-ins wit
     const workspace = join(root, "workspace");
     await mkdir(join(installed, "agents"), { recursive: true });
     await mkdir(workspace);
-    for (const file of ["package.json", "agents/router-spike-worker.md"]) {
+    for (const file of ["package.json", "agents/context-builder.md", "agents/planner.md"]) {
       await copyFile(new URL(`../${file}`, import.meta.url), join(installed, file));
     }
     const script = `
       import assert from 'node:assert/strict';
+      import { join } from 'node:path';
       import { resolveSubagentLaunchContract } from 'pi-subagents/preflight';
-      const options = { cwd: process.argv[1], projectTrusted: false, context: 'fresh', intercomBridge: { mode: 'off' } };
-      const text = await resolveSubagentLaunchContract({ ...options, agent: 'router-spike-worker' });
-      assert.equal(text.ok, true, JSON.stringify(text));
-      assert.equal(text.contract.agent.source, 'package');
-      assert.equal(text.contract.agent.filePath, process.argv[2]);
-      assert.equal(text.contract.systemPromptMode, 'replace');
-      assert.equal(text.contract.inheritProjectContext, false);
-      assert.equal(text.contract.inheritGlobalContext, false);
-      assert.equal(text.contract.inheritSkills, false);
-      assert.equal(text.contract.tools.explicitAllowlist, true);
-      assert.deepEqual(text.contract.tools.effectiveAllowlist, []);
-      for (const [agent, tool] of [['scout', 'bash'], ['reviewer', 'watchdog_diff'], ['worker', 'edit']]) {
+      const parentModel = { provider: 'stub', id: 'parent' };
+      const options = { cwd: process.argv[1], projectTrusted: false, context: 'fresh', intercomBridge: { mode: 'off' },
+        parentModel, availableModels: [{ ...parentModel, reasoning: true }] };
+      for (const [agent, thinking] of [['context-builder', 'medium'], ['planner', 'high']]) {
+        const persona = await resolveSubagentLaunchContract({ ...options, agent });
+        assert.equal(persona.ok, true, JSON.stringify(persona));
+        const { contract } = persona;
+        assert.equal(contract.agent.source, 'package');
+        assert.equal(contract.agent.filePath, join(process.argv[2], agent + '.md'));
+        assert.equal(contract.thinking, thinking);
+        assert.equal(contract.systemPromptMode, 'replace');
+        assert.equal(contract.inheritProjectContext, true);
+        assert.equal(contract.inheritGlobalContext, true);
+        assert.equal(contract.inheritSkills, true);
+        assert.equal(contract.tools.explicitAllowlist, true);
+        assert.deepEqual([...contract.tools.declaredBuiltin].sort(), ['contact_supervisor', 'find', 'grep', 'ls', 'read']);
+      }
+      for (const [agent, tool] of [['delegate', 'read'], ['scout', 'bash'], ['reviewer', 'watchdog_diff'], ['worker', 'edit']]) {
         const workspace = await resolveSubagentLaunchContract({ ...options, agent });
         assert.equal(workspace.ok, true, JSON.stringify(workspace));
         assert.equal(workspace.contract.agent.source, 'builtin');
@@ -40,7 +47,7 @@ test("pi-subagents discovers the packaged text agent and workspace built-ins wit
       }
       process.stdout.write('discovered');
     `;
-    expect(execFileSync(process.execPath, ["--input-type=module", "-e", script, workspace, join(installed, "agents/router-spike-worker.md")], {
+    expect(execFileSync(process.execPath, ["--input-type=module", "-e", script, workspace, join(installed, "agents")], {
       cwd: new URL("../", import.meta.url),
       env: { PATH: process.env.PATH, HOME: root, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1" },
       encoding: "utf8", timeout: 10_000,

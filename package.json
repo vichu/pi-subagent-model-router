@@ -13,7 +13,8 @@
   "files": [
     "src",
     "router.json",
-    "agents/router-spike-worker.md",
+    "agents/context-builder.md",
+    "agents/planner.md",
     "CHANGELOG.md"
   ],
   "pi": {
